@@ -61,7 +61,7 @@ jobs:
           version=$(grep -v '^[[:space:]]*$' VERSION | head -n1)
           build_date=$(TZ=Asia/Shanghai date +%Y%m%d)
           echo "MESA_RELEASE_NAME_SUFFIX=${version}-${build_date}_debian_trixie_arm64" >> "$GITHUB_ENV"
-          git apply wayland.patch
+          patch -p1 -f < wayland.patch
 
       - name: Build Mesa
         shell: bash

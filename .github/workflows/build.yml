@@ -6,7 +6,7 @@ on:
       tag:
         description: 'Branch or tag'
         required: true
-        default: 'dev/adreno-main'
+        default: 'adreno-main'
       draft_release:
         description: 'Draft a new release'
         required: true
@@ -29,7 +29,7 @@ jobs:
           sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources
           apt update
           apt build-dep -y mesa
-          apt install -y git ccache libxfixes-dev libarchive-dev
+          apt install -y git ccache libxfixes-dev libarchive-dev libdrm-dev libwayland-dev wayland-protocols libwayland-egl-backend-dev
 
       - name: Cache ccache
         uses: actions/cache@v5
@@ -61,6 +61,7 @@ jobs:
           version=$(grep -v '^[[:space:]]*$' VERSION | head -n1)
           build_date=$(TZ=Asia/Shanghai date +%Y%m%d)
           echo "MESA_RELEASE_NAME_SUFFIX=${version}-${build_date}_debian_trixie_arm64" >> "$GITHUB_ENV"
+          git apply wayland.patch
 
       - name: Build Mesa
         shell: bash
@@ -85,7 +86,7 @@ jobs:
             -Dmicrosoft-clc=disabled \
             -Dvalgrind=disabled \
             -Dgles1=disabled \
-            -Dfreedreno-kmds=kgsl \
+            -Dfreedreno-kmds=kgsl-drm \
             -Dbuildtype=release
           ninja -C build/
           echo "Mesa build completed successfully!"

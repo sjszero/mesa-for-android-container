@@ -2376,3 +2376,103 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
    *out = device;
    return VK_SUCCESS;
 }
+
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+index 42c38427cec..a1b2c3d8f9a 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -1907,3 +1907,94 @@ kgsl_sparse_vma_map(struct tu_device *dev,
+    .flags = 
+    /* ... */
+ }
++
++static VkResult
++kgsl_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo)
++{
++   assert(bo->shared_fd != -1);
++   return os_dupfd_cloexec(bo->shared_fd);
++}
++
++static VkResult
++kgsl_bo_map(struct tu_device *dev, struct tu_bo *bo, void *placed_addr)
++{
++   void *map;
++   
++   if (bo->gem_handle) {
++      /* For local BOs, map through kgsl offset */
++      uint64_t offset = bo->gem_handle << 12;
++      map = mmap(placed_addr, bo->size, PROT_READ | PROT_WRITE,
++                 MAP_SHARED | (placed_addr ? MAP_FIXED : 0),
++                 dev->physical_device->local_fd, offset);
++   } else {
++      /* For shared BOs, map the dmabuf directly */
++      map = mmap(placed_addr, bo->size, PROT_READ | PROT_WRITE,
++                 MAP_SHARED | (placed_addr ? MAP_FIXED : 0),
++                 bo->shared_fd, 0);
++   }
++
++   if (map == MAP_FAILED)
++      return vk_errorf(dev, VK_ERROR_MEMORY_MAP_FAILED,
++                      "mmap failed (%s)", strerror(errno));
++
++   bo->map = map;
++   bo->iova = (uint64_t)map;
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++kgsl_bo_init_dmabuf(struct tu_device *dev, struct tu_bo **out_bo,
++                    int fd, uint64_t size)
++{
++   struct tu_bo *bo;
++   VkResult result;
++
++   result = tu_bo_init(dev, &bo, size, 0, TU_BO_ALLOC_NO_FLAGS);
++   if (result != VK_SUCCESS)
++      return result;
++
++   bo->shared_fd = os_dupfd_cloexec(fd);
++   if (bo->shared_fd < 0) {
++      result = vk_errorf(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE,
++                        "failed to dup dmabuf fd");
++      goto fail;
++   }
++
++   /* Try to get the actual size */
++   off_t actual_size = lseek(bo->shared_fd, 0, SEEK_END);
++   if (actual_size > 0)
++      bo->size = actual_size;
++
++   *out_bo = bo;
++   return VK_SUCCESS;
++
++fail:
++   kgsl_bo_finish(dev, bo);
++   return result;
++}
++
++static const struct tu_knl kgsl_drm_knl_funcs = {
++   .name = "kgsl_drm",
++   .bo_init = kgsl_bo_init,
++   .bo_init_dmabuf = kgsl_bo_init_dmabuf,
++   .bo_export_dmabuf = kgsl_bo_export_dmabuf,
++   .bo_map = kgsl_bo_map,
++   .bo_unmap = kgsl_bo_unmap,
++   .bo_finish = kgsl_bo_finish,
++   .submitqueue_new = kgsl_submitqueue_new,
++   .submitqueue_close = kgsl_submitqueue_close,
++   .submitqueue_submit = kgsl_submitqueue_submit,
++   .wait = kgsl_wait,
++   .bo_get_syncobj = kgsl_bo_get_syncobj,
++};
++
++static void
++kgsl_bo_unmap(struct tu_device *dev, struct tu_bo *bo)
++{
++   if (bo->never_unmap)
++      return;
++
++   if (bo->map)
++      munmap(bo->map, bo->size);
++}

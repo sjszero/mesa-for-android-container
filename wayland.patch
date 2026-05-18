@@ -2166,3 +2166,213 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
    
    return VK_ERROR_INCOMPATIBLE_DRIVER;
 }
+offset);
+   } else {
+      /* For shared BOs, we need to map the shared fd */
+      map = mmap(placed_addr, bo->size, PROT_READ | PROT_WRITE,
+                 MAP_SHARED | (placed_addr != NULL ? MAP_FIXED : 0),
+                 bo->shared_fd, 0);
+   }
+
+   if (map == MAP_FAILED)
+      return vk_errorf(dev, VK_ERROR_MEMORY_MAP_FAILED,
+                       "mmap failed (%s)", strerror(errno));
+
+   bo->map = map;
+   bo->iova = (uint64_t)map;
+
+   return VK_SUCCESS;
+}
+
+static void
+kgsl_bo_unmap(struct tu_device *dev, struct tu_bo *bo)
+{
+   if (bo->never_unmap)
+      return;
+
+   if (bo->map) {
+      munmap(bo->map, bo->size);
+      bo->map = NULL;
+      bo->iova = 0;
+   }
+}
+
+static void
+kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
+{
+   kgsl_bo_unmap(dev, bo);
+
+   if (bo->gem_handle) {
+      struct kgsl_gpumem_free_id req = {
+         .id = bo->gem_handle,
+      };
+
+      safe_ioctl(dev->physical_device->local_fd,
+                 IOCTL_KGSL_GPUMEM_FREE_ID, &req);
+   }
+
+   if (bo->shared_fd != -1)
+      close(bo->shared_fd);
+
+   tu_dump_bo_finish(dev, bo);
+}
+
+static VkResult
+kgsl_submitqueue_submit(struct tu_device *dev,
+                        struct tu_queue *queue,
+                        struct tu_cs *cs,
+                        struct tu_cs *autotune_cs,
+                        uint32_t nr_in_syncobjs,
+                        uint32_t nr_out_syncobjs,
+                        struct drm_msm_gem_submit_syncobj *in_syncobjs,
+                        struct drm_msm_gem_submit_syncobj *out_syncobjs)
+{
+   struct kgsl_command_object obj = {
+      .offset = (uint64_t)cs->start,
+      .size = cs->cur - cs->start,
+      .gpuaddr = cs->start_iova,
+      .flags = KGSL_OBJFLAG_SUBMIT,
+      .id = cs->bo->gem_handle,
+   };
+
+   struct kgsl_submit_commands submit = {
+      .context_id = queue->msm_queue_id,
+      .cmdlist = (uint64_t)(uintptr_t)&obj,
+      .numcmds = 1,
+      .synclist = 0,
+      .numsyncs = 0,
+      .flags = 0,
+   };
+
+   if (autotune_cs) {
+      struct kgsl_command_object autotune_obj = {
+         .offset = (uint64_t)autotune_cs->start,
+         .size = autotune_cs->cur - autotune_cs->start,
+         .gpuaddr = autotune_cs->start_iova,
+         .flags = KGSL_OBJFLAG_SUBMIT,
+         .id = autotune_cs->bo->gem_handle,
+      };
+      /* TODO: handle autotune command submission */
+   }
+
+   int ret = safe_ioctl(dev->physical_device->local_fd,
+                        IOCTL_KGSL_SUBMIT_COMMANDS, &submit);
+   if (ret)
+      return vk_errorf(dev, VK_ERROR_DEVICE_LOST,
+                       "KGSL submit failed (%s)", strerror(errno));
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+kgsl_wait(struct tu_device *dev, struct tu_queue *queue, uint64_t timeout_ns)
+{
+   struct kgsl_device_waittimestamp req = {
+      .timestamp = 0, /* wait for most recent submission */
+      .timeout = timeout_ns / 1000000, /* convert to milliseconds */
+   };
+
+   int ret = safe_ioctl(dev->physical_device->local_fd,
+                        IOCTL_KGSL_DEVICE_WAITTIMESTAMP, &req);
+   if (ret && errno == ETIMEDOUT)
+      return VK_TIMEOUT;
+   else if (ret)
+      return vk_errorf(dev, VK_ERROR_DEVICE_LOST,
+                       "KGSL wait failed (%s)", strerror(errno));
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+kgsl_bo_get_syncobj(struct tu_device *dev, struct tu_bo *bo,
+                    uint32_t *syncobj, bool wait)
+{
+   /* For kgsl, we use the gem handle as the sync object */
+   *syncobj = bo->gem_handle;
+   return VK_SUCCESS;
+}
+
+static const struct tu_knl kgsl_drm_knl_funcs = {
+   .name = "kgsl_drm",
+   .bo_init = kgsl_bo_init,
+   .bo_init_dmabuf = kgsl_bo_init_dmabuf,
+   .bo_export_dmabuf = kgsl_bo_export_dmabuf,
+   .bo_map = kgsl_bo_map,
+   .bo_unmap = kgsl_bo_unmap,
+   .bo_finish = kgsl_bo_finish,
+   .submitqueue_new = kgsl_submitqueue_new,
+   .submitqueue_close = kgsl_submitqueue_close,
+   .submitqueue_submit = kgsl_submitqueue_submit,
+   .wait = kgsl_wait,
+   .bo_get_syncobj = kgsl_bo_get_syncobj,
+};
+
+VkResult
+tu_knl_kgsl_drm_load(struct tu_instance *instance,
+                     struct _drmVersion *version,
+                     struct tu_physical_device **out,
+                     const char *path)
+{
+   struct tu_physical_device *device;
+   VkResult result;
+   
+   /* First try to open the KGSL device */
+   int kgsl_fd = open(path, O_RDWR | O_CLOEXEC);
+   if (kgsl_fd < 0) {
+      return vk_startup_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
+                               "failed to open %s: %s", path, strerror(errno));
+   }
+   
+   /* We need both KGSL and DRM devices */
+   device = tu_physical_device_create(instance);
+   if (!device) {
+      close(kgsl_fd);
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+   
+   device->kgsl_fd = kgsl_fd;
+   device->local_fd = kgsl_fd; /* KGSL device is used for both */
+   
+   /* Check DMA heap type */
+   device->kgsl_dma_type = TU_KGSL_DMA_TYPE_UNKNOWN;
+   
+   /* Try DMA heap first */
+   int dmaheap_fd = open("/dev/dma_heap/system", O_RDWR | O_CLOEXEC);
+   if (dmaheap_fd >= 0) {
+      device->kgsl_dma_fd = dmaheap_fd;
+      device->kgsl_dma_type = TU_KGSL_DMA_TYPE_DMAHEAP;
+   } else {
+      /* Try ION */
+      int ion_fd = open("/dev/ion", O_RDWR | O_CLOEXEC);
+      if (ion_fd >= 0) {
+         device->kgsl_dma_fd = ion_fd;
+         /* Check if new ION API is available */
+         struct ion_new_allocation_data test_alloc = {0};
+         if (safe_ioctl(ion_fd, ION_IOC_NEW_ALLOC, &test_alloc) == 0) {
+            device->kgsl_dma_type = TU_KGSL_DMA_TYPE_ION;
+            close(test_alloc.fd);
+         } else {
+            device->kgsl_dma_type = TU_KGSL_DMA_TYPE_ION_LEGACY;
+         }
+      }
+   }
+   
+   device->has_cached_non_coherent_memory = true;
+   device->has_set_iova = false;
+   device->has_global_bo_map = true;
+   device->has_per_context_bo_map = false;
+   device->has_syncobjs = false;
+   
+   device->knl = &kgsl_drm_knl_funcs;
+   
+   /* Get GPU properties through KGSL */
+   struct kgsl_gpuprop prop = {0};
+   if (safe_ioctl(kgsl_fd, IOCTL_KGSL_GPU_PROPERTY, &prop) == 0) {
+      device->gpu_id = prop.gpu_id;
+      device->gmem_size = prop.gmem_size;
+      device->gmem_base = prop.gmem_base;
+   }
+   
+   *out = device;
+   return VK_SUCCESS;
+}

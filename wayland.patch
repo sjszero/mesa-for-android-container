@@ -2140,3 +2140,14 @@ index 12b694b4aae..b2b37643450 100644
     return wsi_common_drm_devices_equal(fd, pdevice->local_fd);
  #else
     return true;
+
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -23,6 +23,7 @@
+ #include "util/u_math.h"
+ 
+ struct tu_bo {
++  int dmabuf_fd;
+   uint32_t gem_handle;
+   uint64_t size;
+   uint64_t iova;

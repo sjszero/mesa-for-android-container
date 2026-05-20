@@ -60,9 +60,7 @@ jobs:
           build_date=$(TZ=Asia/Shanghai date +%Y%m%d)
           echo "MESA_RELEASE_NAME_SUFFIX=${version}-${build_date}_debian_trixie_arm64" >> "$GITHUB_ENV"
           wget https://github.com/sjszero/mesa-for-android-container/raw/mesa-test/wayland.patch
-          wget https://github.com/sjszero/mesa-for-android-container/raw/mesa-test/wayland_2.patch
           patch -p1 -f < wayland.patch
-          patch -p1 -f < wayland_2.patch
           
       - name: Build Mesa
         shell: bash

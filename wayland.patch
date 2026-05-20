@@ -2202,3 +2202,101 @@ index 42c38427cec..abcdef123456 100644
     };
 -- 
 2.34.1
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Osilvfe <3072756864@qq.com>
+Date: Thu, 21 May 2026 12:00:00 +0800
+Subject: [PATCH] tu/kgsl-drm: fix segfault and add VK_EXT_physical_device_drm
+
+---
+ src/freedreno/vulkan/tu_device.h           |  8 ++++++++
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc    | 35 ++++++++++++++++++++++++++++--
+ 2 files changed, 41 insertions(+), 2 deletions(-)
+
+diff --git a/src/freedreno/vulkan/tu_device.h b/src/freedreno/vulkan/tu_device.h
+index 69c6845a230..4f2c8d9e6b1 100644
+--- a/src/freedreno/vulkan/tu_device.h
++++ b/src/freedreno/vulkan/tu_device.h
+@@ -271,6 +271,14 @@ struct tu_physical_device
+    bool has_raytracing;
+    bool has_cached_coherent_memory;
+ 
++   /* For VK_EXT_physical_device_drm */
++   bool has_primary_drm_node;
++   bool has_render_drm_node;
++   int primary_drm_node_minor;
++   int render_drm_node_minor;
++   int primary_drm_node_major;
++   int render_drm_node_major;
++
+    uint32_t uche_trap_base;
+ 
+    /* the physical device properties */
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+index 42c38427cec..3c2e1b8d4f6 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -307,6 +307,12 @@ kgsl_bo_init(struct tu_device *dev,
+          return vk_errorf(dev, VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS,
+                           "cannot allocate an exportable BO with a fixed address");
+       }
++
++      if (dev->physical_device->kgsl_dma_fd < 0) {
++         return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                          "No DMA heap or ION device available for exportable BO");
++      }
++
+       switch(dev->physical_device->kgsl_dma_type) {
+       case TU_KGSL_DMA_TYPE_DMAHEAP:
+          return bo_init_new_dmaheap(dev, out_bo, size, flags);
+@@ -1728,7 +1734,19 @@ kgsl_device_init(struct tu_device *dev)
+ static void
+ kgsl_device_finish(struct tu_device *dev)
+ {
+-   /* No-op */
++   /* Wait for all queues to finish to avoid dangling callbacks */
++   for (unsigned i = 0; i < TU_MAX_QUEUE_FAMILIES; i++) {
++      for (unsigned q = 0; q < dev->queue_count[i]; q++) {
++         struct tu_queue *queue = &dev->queues[i][q];
++         if (queue->fence != -1) {
++            wait_timestamp_safe(dev->fd, queue->msm_queue_id,
++                                queue->fence, UINT64_MAX);
++         }
++      }
++   }
++   /* Close the DMA heap / ION fd if it was opened */
++   if (dev->physical_device->kgsl_dma_fd >= 0)
++      close(dev->physical_device->kgsl_dma_fd);
+ }
+ 
+ static int
+@@ -1872,6 +1890,19 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
+    /* preemption is always supported on kgsl */
+    device->has_preemption = true;
+ 
++   /* Fill VK_EXT_physical_device_drm information.
++    * kgsl is not a real DRM node, but we provide dummy values
++    * to satisfy the extension and allow WSI layers to work.
++    */
++   device->has_primary_drm_node = true;
++   device->primary_drm_node_minor = 0;
++   device->primary_drm_node_major = 226; /* DRM_MAJOR is typically 226 for msm_drm */
++   device->has_render_drm_node = true;
++   device->render_drm_node_minor = 128;  /* Typical render node minor offset */
++   device->render_drm_node_major = 226;
++
++   device->supported_extensions.ext_physical_device_drm = true;
++
+    device->ubwc_config.highest_bank_bit = highest_bank_bit;
+ 
+    /* The other config values can be partially inferred from the UBWC version,
+@@ -1921,7 +1952,7 @@ fail:
+    vk_free(&instance->vk.alloc, device);
+    close(fd);
+    if (dma_fd >= 0)
+-      close(dma_fd);
++      close(dma_fd);
+    return result;
+ }
+ 
+-- 
+2.34.1

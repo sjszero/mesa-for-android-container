@@ -1837,37 +1837,6 @@ index 00000000000..42c38427cec
 +}
 +
 +VkResult
-+tu_knl_kgsl_load(struct tu_instance *instance, int fd, struct tu_physical_device **out);
-+
-+VkResult
-+tu_knl_kgsl_drm_load(struct tu_instance *instance,
-+                     struct _drmVersion *version,
-+                     struct tu_physical_device **out,
-+                     const char *path)
-+{
-+      int kgsl_fd;
-+
-+      kgsl_fd = open(path, O_RDWR | O_CLOEXEC);
-+      if (kgsl_fd < 0) {
-+      if (errno == ENOENT)
-+         return VK_ERROR_INCOMPATIBLE_DRIVER;
-+
-+      return vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
-+                       "failed to open device %s", path);
-+      }
-+
-+   VkResult result = tu_knl_kgsl_load(instance, kgsl_fd, out);
-+   if (result != VK_SUCCESS) {
-+      close(kgsl_fd);
-+      return result;
-+   }
-+   struct tu_physical_device * device = *out;
-+   device->msm_major_version = version->version_major;
-+   device->msm_minor_version = version->version_minor;
-+
-+   return result;
-+}
-+VkResult
 +tu_knl_kgsl_load(struct tu_instance *instance, int fd,
 +                 struct tu_physical_device **out){
 +   struct tu_physical_device *device = (struct tu_physical_device *)
@@ -1888,7 +1857,6 @@ index 00000000000..42c38427cec
 +   } else {
 +      dma_fd = open(ion_path, O_RDONLY);
 +      if (dma_fd >= 0) {
-+         /* ION_IOC_FREE available only for legacy ION */
 +         struct ion_handle_data free = { .handle = 0 };
 +         if (safe_ioctl(dma_fd, ION_IOC_FREE, &free) >= 0 || errno != ENOTTY)
 +            device->kgsl_dma_type = TU_KGSL_DMA_TYPE_ION_LEGACY;
@@ -1924,11 +1892,8 @@ index 00000000000..42c38427cec
 +
 +   if (get_kgsl_prop(fd, KGSL_PROP_UCHE_TRAP_BASE, &device->uche_trap_base,
 +                     sizeof(device->uche_trap_base))) {
-+      /* It is known to be hardcoded to */
 +      device->uche_trap_base = 0x1fffffffff000ull;
 +   }
-+
-+   /* kgsl version check? */
 +
 +   device->instance = instance;
 +   device->master_fd = -1;
@@ -1960,7 +1925,6 @@ index 00000000000..42c38427cec
 +   device->has_set_iova = kgsl_is_memory_type_supported(
 +      fd, KGSL_MEMFLAGS_USE_CPU_MAP);
 +
-+   /* Even if kernel is new enough, the GPU itself may not support it. */
 +   device->has_cached_coherent_memory = kgsl_is_memory_type_supported(
 +      fd, KGSL_MEMFLAGS_IOCOHERENT |
 +             (KGSL_CACHEMODE_WRITEBACK << KGSL_CACHEMODE_SHIFT));
@@ -1970,21 +1934,12 @@ index 00000000000..42c38427cec
 +   device->has_lazy_bos = device->has_sparse;
 +   get_kgsl_prop(fd, KGSL_PROP_GPU_VA64_SIZE, &device->va_size,
 +                 sizeof(device->va_size));
-+   /* We don't actually use the VMA, but set a fake offset so that it doesn't
-+    * think we're trying to allocate 0 and assert.
-+    */
 +   device->va_start = 0x100000000;
 +
-+
-+   /* preemption is always supported on kgsl */
 +   device->has_preemption = true;
 +
 +   device->ubwc_config.highest_bank_bit = highest_bank_bit;
 +
-+   /* The other config values can be partially inferred from the UBWC version,
-+    * but kgsl also hardcodes overrides for specific a6xx versions that we
-+    * have to follow here. Yuck.
-+    */
 +   switch (ubwc_version) {
 +   case KGSL_UBWC_1_0:
 +      device->ubwc_config.bank_swizzle_levels = 0x7;
@@ -2007,14 +1962,10 @@ index 00000000000..42c38427cec
 +                       "unknown UBWC version 0x%x", ubwc_version);
 +   }
 +
-+   /* kgsl unfortunately hardcodes some settings for certain GPUs and doesn't
-+    * expose them in the uAPI so hardcode them here to match.
-+    */
 +   if (device->dev_id.gpu_id == 663 || device->dev_id.gpu_id == 680) {
 +      device->ubwc_config.macrotile_mode = FDL_MACROTILE_8_CHANNEL;
 +   }
 +   if (device->dev_id.gpu_id == 663) {
-+      /* level2_swizzling_dis = 1 */
 +      device->ubwc_config.bank_swizzle_levels = 0x4;
 +   }
 +

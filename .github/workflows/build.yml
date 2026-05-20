@@ -67,7 +67,7 @@ jobs:
         run: |
           export CCACHE_DIR=/root/.ccache
           echo "Building Mesa..."
-          cd ~/mesa-for-android-container
+          cd ~/mesa
           meson setup build/ \
             --prefix=/usr \
             -Dplatforms=x11,wayland \
@@ -101,10 +101,10 @@ jobs:
         shell: bash
         run: |
           echo "Packaging Mesa..."
-          cd ~/mesa-for-android-container
+          cd ~/mesa
           mkdir /tmp/mesa-install-tmp
           DESTDIR=/tmp/mesa-install-tmp meson install -C build/
-          tar -zcvf mesa-for-android-container_${MESA_RELEASE_NAME_SUFFIX}.tar.gz -C /tmp/mesa-install-tmp .
+          tar -zcvf mesa_${MESA_RELEASE_NAME_SUFFIX}.tar.gz -C /tmp/mesa-install-tmp .
           rm -rf /tmp/mesa-install-tmp
           echo "Calculating sha256 checksums..."
           find . -maxdepth 1 \( -name "*.tar.gz" \) -type f -printf "%P\0" | xargs -0 sha256sum | sort -k2 > sha256sums.txt
@@ -116,8 +116,8 @@ jobs:
         with:
           name: mesa-for-android-container_${{ env.MESA_RELEASE_NAME_SUFFIX }}
           path: |
-            ~/mesa-for-android-container/*.tar.gz
-            ~/mesa-for-android-container/sha256sums.txt
+            ~/mesa/*.tar.gz
+            ~/mesa/sha256sums.txt
           retention-days: 90
 
   ubuntu-noble:

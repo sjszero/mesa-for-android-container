@@ -29,7 +29,7 @@ jobs:
           sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources
           apt update
           apt build-dep -y mesa
-          apt install -y git ccache libxfixes-dev libarchive-dev libdrm-dev libwayland-dev wayland-protocols libwayland-egl-backend-dev
+          apt install -y wget git ccache libxfixes-dev libarchive-dev libdrm-dev libwayland-dev wayland-protocols libwayland-egl-backend-dev
 
       - name: Cache ccache
         uses: actions/cache@v5

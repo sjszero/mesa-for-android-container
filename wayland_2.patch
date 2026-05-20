@@ -1,0 +1,72 @@
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+index 42c38427cec..b9e2f1a8c3d 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -373,16 +373,16 @@ static void
+ kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
+ {
+    assert(bo->gem_handle);
+ 
+    if (!p_atomic_dec_zero(&bo->refcnt))
+       return;
+ 
+    tu_debug_bos_del(dev, bo);
+    tu_dump_bo_del(dev, bo);
+ 
+    if (bo->map) {
+       TU_RMV(bo_unmap, dev, bo);
+       munmap(bo->map, bo->size);
+    }
+ 
+    if (bo->shared_fd != -1)
+       close(bo->shared_fd);
+ 
+    TU_RMV(bo_destroy, dev, bo);
+ 
+-   struct kgsl_gpumem_free_id req = {
+-      .id = bo->gem_handle
+-   };
+-
+-   /* Tell sparse array that entry is free */
+-   memset(bo, 0, sizeof(*bo));
+-
+-   safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
++   if (bo->gem_handle) {
++      struct kgsl_gpumem_free_id req = { .id = bo->gem_handle };
++      safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
++      bo->gem_handle = 0;
++   }
++   /* Do NOT memset the bo structure; it lives in a sparse array and other
++    * references may exist. The array entry will be reused later.
++    */
+ }
+ 
+ static VkResult
+@@ -479,12 +479,10 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
+                        struct tu_sparse_vma *vma)
+ {
+-   struct kgsl_gpuobj_free req = {
+-      .id = vma->kgsl.virtual_bo->gem_handle
+-   };
+-
+-   /* Tell sparse array that entry is free */
+-   memset(vma->kgsl.virtual_bo, 0, sizeof(*vma->kgsl.virtual_bo));
+-
+-   safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
++   if (vma->kgsl.virtual_bo) {
++      kgsl_bo_finish(dev, vma->kgsl.virtual_bo);
++      vma->kgsl.virtual_bo = NULL;
++   }
+ }
+ 
+ static VkResult
+@@ -1193,7 +1191,9 @@ kgsl_device_init(struct tu_device *dev)
+ static void
+ kgsl_device_finish(struct tu_device *dev)
+ {
+-   /* No-op */
++   if (dev->physical_device->local_fd >= 0)
++      close(dev->physical_device->local_fd);
++   if (dev->physical_device->kgsl_dma_fd >= 0)
++      close(dev->physical_device->kgsl_dma_fd);
+ }

@@ -50,17 +50,16 @@ jobs:
       - name: Clone repository
         run: |
           cd ~
-          git config --global user.email "actions@github.com"
-          git config --global user.name "GitHub Actions"
-          git clone -b ${{ github.event.inputs.tag }} --depth 1 ${{ github.server_url }}/${{ github.repository }}.git
+          git clone https://gitlab.freedesktop.org/mesa/mesa.git
 
       - name: Set release name suffix
         shell: bash
         run: |
-          cd ~/mesa-for-android-container
+          cd ~/mesa
           version=$(grep -v '^[[:space:]]*$' VERSION | head -n1)
           build_date=$(TZ=Asia/Shanghai date +%Y%m%d)
           echo "MESA_RELEASE_NAME_SUFFIX=${version}-${build_date}_debian_trixie_arm64" >> "$GITHUB_ENV"
+          wget https://github.com/sjszero/mesa-for-android-container/raw/adreno-main/wayland.patch
           patch -p1 -f < wayland.patch
 
       - name: Build Mesa

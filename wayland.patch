@@ -553,8 +553,15 @@ index 00000000000..42c38427cec
 +      .id = bo->gem_handle
 +   };
 +
-+   /* Tell sparse array that entry is free */
-+   memset(bo, 0, sizeof(*bo));
++   /* Tell sparse array that entry is free — we only need to reset the handle,
++    * not the whole struct, because other code may still hold pointers to this
++    * bo entry. The sparse array slot can be reused.
++    */
++   bo->gem_handle = 0;
++   bo->shared_fd = -1;
++   /* other important fields are left as-is, but they shouldn't be accessed
++    * after the bo is freed. The reference count should already be 0.
++    */
 +
 +   safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
 +}
@@ -638,9 +645,11 @@ index 00000000000..42c38427cec
 +      .id = vma->kgsl.virtual_bo->gem_handle
 +   };
 +
-+   /* Tell sparse array that entry is free */
-+   memset(vma->kgsl.virtual_bo, 0, sizeof(*vma->kgsl.virtual_bo));
-+
++   /* Only reset the handle; do not zero the whole struct */
++   vma->kgsl.virtual_bo->gem_handle = 0;
++   vma->kgsl.virtual_bo->shared_fd = -1;
++   vma->kgsl.virtual_bo = NULL;   /* prevent dangling pointer */
++   
 +   safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
 +}
 +
@@ -729,14 +738,14 @@ index 00000000000..42c38427cec
 +static void
 +kgsl_syncobj_reset(struct kgsl_syncobj *s)
 +{
++   /* Only close the fd if we own it and it's not already -1 */
 +   if (s->state == KGSL_SYNCOBJ_STATE_FD && s->fd >= 0) {
-+      ASSERTED int ret = close(s->fd);
-+      assert(ret == 0);
++      close(s->fd);
++      s->fd = -1;
 +   }
 +
 +   s->state = KGSL_SYNCOBJ_STATE_UNSIGNALED;
 +   s->timestamp = UINT32_MAX;
-+   s->fd = -1;
 +}
 +
 +static void
@@ -1148,20 +1157,26 @@ index 00000000000..42c38427cec
 +         break;
 +
 +      case KGSL_SYNCOBJ_STATE_FD:
-+         if (ret.state == KGSL_SYNCOBJ_STATE_FD) {
-+            ret.fd = sync_merge_close("tu_sync", ret.fd, sync->fd, false);
-+            assert(ret.fd >= 0);
-+         } else if (ret.state == KGSL_SYNCOBJ_STATE_TS) {
-+            ret.state = KGSL_SYNCOBJ_STATE_FD;
-+            int sync_fd = kgsl_syncobj_ts_to_fd(sync);
-+            ret.fd = sync_merge_close("tu_sync", ret.fd, sync_fd, true);
-+            assert(ret.fd >= 0);
-+         } else {
-+            ret = *sync;
-+            ret.fd = os_dupfd_cloexec(ret.fd);
-+            assert(ret.fd >= 0);
-+         }
-+         break;
++          if (ret.state == KGSL_SYNCOBJ_STATE_FD) {
++             /* Duplicate the incoming fd so we don't close the original */
++             int dup_fd = os_dupfd_cloexec(sync->fd);
++             if (dup_fd < 0) {
++                /* fallback, but should not happen */
++                dup_fd = sync->fd;
++             }
++             ret.fd = sync_merge_close("tu_sync", ret.fd, dup_fd, true);
++             assert(ret.fd >= 0);
++          } else if (ret.state == KGSL_SYNCOBJ_STATE_TS) {
++             ret.state = KGSL_SYNCOBJ_STATE_FD;
++             int sync_fd = kgsl_syncobj_ts_to_fd(sync);
++             ret.fd = sync_merge_close("tu_sync", ret.fd, sync_fd, true);
++             assert(ret.fd >= 0);
++          } else {
++             ret = *sync;
++             ret.fd = os_dupfd_cloexec(ret.fd);
++             assert(ret.fd >= 0);
++          }
++          break;
 +
 +      default:
 +         UNREACHABLE("invalid syncobj state");

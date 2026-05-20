@@ -1,95 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fix <fix@example.com>
-Date: Wed, 20 May 2026 12:00:00 +0800
-Subject: [PATCH] tu/kgsl-drm: add missing profiling members and fix shared_fd duplication
+Date: Thu, 21 May 2026 12:00:00 +0800
+Subject: [PATCH] tu/kgsl-drm: fix memory management issues causing segfault
 
-- Add kgsl_profiling_mutex and kgsl_profiling_suballoc to struct tu_device
-- Initialize and destroy them in tu_device_init/finish
-- Unify shared_fd definition in struct tu_bo under single condition
+- Remove dangerous memset of tu_bo struct in kgsl_bo_finish and
+  kgsl_sparse_vma_finish; only reset required fields.
+- Fix double-close of syncobj file descriptors by dup'ing before merge.
+- Ensure syncobj fd is set to -1 after closing to prevent reuse.
 
- src/freedreno/vulkan/tu_device.c | 19 +++++++++++++++++++
- src/freedreno/vulkan/tu_device.h |  5 +++++
- src/freedreno/vulkan/tu_knl.h    | 15 +++++----------
- 3 files changed, 29 insertions(+), 10 deletions(-)
+Signed-off-by: Fix <fix@example.com>
+---
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 34 ++++++++++++++++++++-----
+ 1 file changed, 28 insertions(+), 6 deletions(-)
 
-diff --git a/src/freedreno/vulkan/tu_device.c b/src/freedreno/vulkan/tu_device.c
-index 1234567..abcdefg 100644
---- a/src/freedreno/vulkan/tu_device.c
-+++ b/src/freedreno/vulkan/tu_device.c
-@@ -1200,6 +1200,15 @@ VkResult tu_device_init(struct tu_device *dev,
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+index 42c38427cec..abcdef123456 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -392,10 +392,11 @@ kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
+ 
+    TU_RMV(bo_destroy, dev, bo);
+ 
+-   struct kgsl_gpumem_free_id req = {
+-      .id = bo->gem_handle
+-   };
++   struct kgsl_gpumem_free_id req = { .id = bo->gem_handle };
+ 
+-   /* Tell sparse array that entry is free */
+-   memset(bo, 0, sizeof(*bo));
++   /* Only reset the handle; do not zero the whole struct because other
++    * code may still hold pointers to this bo entry (e.g., pending command
++    * buffers). The sparse array slot can be reused safely.
++    */
++   bo->gem_handle = 0;
++   bo->shared_fd = -1;
+ 
+    safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
+ }
+@@ -519,10 +520,13 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
+       .id = vma->kgsl.virtual_bo->gem_handle
+    };
+ 
+-   /* Tell sparse array that entry is free */
+-   memset(vma->kgsl.virtual_bo, 0, sizeof(*vma->kgsl.virtual_bo));
++   /* Reset handle and clear pointer to prevent dangling access */
++   vma->kgsl.virtual_bo->gem_handle = 0;
++   vma->kgsl.virtual_bo->shared_fd = -1;
++   vma->kgsl.virtual_bo = NULL;
+ 
+    safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
+ }
+ 
+ static VkResult
+ get_kgsl_prop(int fd, unsigned int type, void *value, size_t size)
+@@ -633,10 +637,12 @@ kgsl_syncobj_reset(struct kgsl_syncobj *s)
+ {
+    if (s->state == KGSL_SYNCOBJ_STATE_FD && s->fd >= 0) {
+       ASSERTED int ret = close(s->fd);
+       assert(ret == 0);
++      s->fd = -1;   /* mark as closed to avoid double-close */
     }
- #endif
-
-+#ifdef TU_HAS_KGSL_DRM
-+   if (strcmp(dev->physical_device->instance->knl->name, "kgsl_drm") == 0) {
-+      mtx_init(&dev->kgsl_profiling_mutex, mtx_plain);
-+      tu_suballoc_bo_init(&dev->kgsl_profiling_suballoc,
-+                          dev, 64 * 1024, 0,
-+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-+                          TU_BO_ALLOC_INTERNAL_RESOURCE);
-+   }
-+#endif
-    result = tu_device_init_cs(dev);
-    if (result != VK_SUCCESS)
-       goto fail_cs;
-@@ -1330,6 +1339,12 @@ void tu_device_finish(struct tu_device *dev)
-    tu_bo_finish(&dev->global_bo);
-    tu_bo_finish(&dev->pipeline_bo);
-
-+#ifdef TU_HAS_KGSL_DRM
-+   if (strcmp(dev->physical_device->instance->knl->name, "kgsl_drm") == 0) {
-+      tu_suballoc_bo_finish(&dev->kgsl_profiling_suballoc);
-+      mtx_destroy(&dev->kgsl_profiling_mutex);
-+   }
-+#endif
-    tu_bo_finish(&dev->bcolor_bo);
-
-    tu_cs_finish(&dev->init_cs);
-diff --git a/src/freedreno/vulkan/tu_device.h b/src/freedreno/vulkan/tu_device.h
-index 08c102ae1..69c6845a2 100644
---- a/src/freedreno/vulkan/tu_device.h
-+++ b/src/freedreno/vulkan/tu_device.h
-@@ -340,6 +340,11 @@ struct tu_device {
-    uint64_t protected_context;
- #endif
-
-+#ifdef TU_HAS_KGSL_DRM
-+   mtx_t kgsl_profiling_mutex;
-+   struct tu_suballoc_bo kgsl_profiling_suballoc;
-+#endif
-+
-    struct tu_drm_bo global_bo;
-    struct tu_drm_bo pipeline_bo;
-    struct tu_drm_bo bcolor_bo;
-diff --git a/src/freedreno/vulkan/tu_knl.h b/src/freedreno/vulkan/tu_knl.h
-index 0426eba53..623b21f8d 100644
---- a/src/freedreno/vulkan/tu_knl.h
-+++ b/src/freedreno/vulkan/tu_knl.h
-@@ -50,12 +50,7 @@ struct tu_bo {
-    uint64_t iova;
-    const char *name;
-    uint32_t gem_handle;
--#ifdef TU_HAS_MSM
--   int shared_fd;
--#endif
--
--#ifdef TU_HAS_KGSL_DRM
--   int shared_fd;
-+#if defined(TU_HAS_MSM) || defined(TU_HAS_KGSL_DRM)
-    int shared_fd;
- #endif
-
-@@ -178,6 +173,12 @@ struct tu_physical_device {
-    int local_fd;
-    int master_fd;
-
-+#ifdef TU_HAS_KGSL_DRM
-+   int kgsl_dma_fd;
-+   int kgsl_dma_type;
-+   int msm_major_version, msm_minor_version;
-+#endif
-+
-    struct tu_device *devices[TU_MAX_DEVICES];
-    uint32_t device_count;
-    pthread_mutex_t device_mutex;
+ 
+    s->state = KGSL_SYNCOBJ_STATE_UNSIGNALED;
+    s->timestamp = UINT32_MAX;
+-   s->fd = -1;
+ }
+ 
+ static void
+ kgsl_syncobj_destroy(struct kgsl_syncobj *s)
+@@ -839,10 +845,21 @@ kgsl_syncobj_merge(const struct kgsl_syncobj **syncobjs, uint32_t count)
+          break;
+ 
+       case KGSL_SYNCOBJ_STATE_FD:
+          if (ret.state == KGSL_SYNCOBJ_STATE_FD) {
+-            ret.fd = sync_merge_close("tu_sync", ret.fd, sync->fd, false);
++            /* Duplicate the incoming fd so we don't close the original syncobj's fd.
++             * This prevents double-close later when the original syncobj is reset.
++             */
++            int dup_fd = os_dupfd_cloexec(sync->fd);
++            if (dup_fd < 0) {
++               mesa_loge("kgsl_syncobj_merge: dup failed, falling back to original fd");
++               dup_fd = sync->fd;
++            } else {
++               /* we own the duplicate, close it after merge */
++            }
++            ret.fd = sync_merge_close("tu_sync", ret.fd, dup_fd, true);
+             assert(ret.fd >= 0);
+          } else if (ret.state == KGSL_SYNCOBJ_STATE_TS) {
+             ret.state = KGSL_SYNCOBJ_STATE_FD;
+             int sync_fd = kgsl_syncobj_ts_to_fd(sync);
+             ret.fd = sync_merge_close("tu_sync", ret.fd, sync_fd, true);
+             assert(ret.fd >= 0);
+          } else {
 -- 
 2.34.1

@@ -2203,49 +2203,51 @@ index 42c38427cec..abcdef123456 100644
 -- 
 2.34.1
 
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fix <fix@example.com>
-Date: Thu, 21 May 2026 10:00:00 +0800
-Subject: [PATCH] tu/kgsl-drm: fix memory corruption and resource leaks
-
-- Remove memset of bo structure in kgsl_bo_finish (corrupts sparse array)
-- Properly release virtual bo in kgsl_sparse_vma_finish via kgsl_bo_finish
-- Close kgsl device fds in kgsl_device_finish
-- Avoid closing invalid fd in error path
----
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 22 +++++++++++++---------
- 1 file changed, 13 insertions(+), 9 deletions(-)
-
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index 42c3842..f3a2b1c 100644
+index abcdef123456..123456abcdef 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -373,16 +373,15 @@ kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
+@@ -373,16 +373,16 @@ static void
+ kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
+ {
+    assert(bo->gem_handle);
+ 
+    if (!p_atomic_dec_zero(&bo->refcnt))
+       return;
+ 
+    tu_debug_bos_del(dev, bo);
+    tu_dump_bo_del(dev, bo);
+ 
+    if (bo->map) {
+       TU_RMV(bo_unmap, dev, bo);
+       munmap(bo->map, bo->size);
+    }
+ 
+    if (bo->shared_fd != -1)
+       close(bo->shared_fd);
  
     TU_RMV(bo_destroy, dev, bo);
  
 -   struct kgsl_gpumem_free_id req = {
 -      .id = bo->gem_handle
 -   };
+-
+-   /* Tell sparse array that entry is free */
+-   memset(bo, 0, sizeof(*bo));
+-
+-   safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
 +   if (bo->gem_handle) {
 +      struct kgsl_gpumem_free_id req = { .id = bo->gem_handle };
 +      safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
 +      bo->gem_handle = 0;
 +   }
- 
--   /* Tell sparse array that entry is free */
--   memset(bo, 0, sizeof(*bo));
--
--   safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
-+   /* Do NOT memset bo - the entry lives in a sparse array and may be
-+    * referenced elsewhere. The array entry will be reused later.
++   /* Do NOT memset the bo structure; it lives in a sparse array and other
++    * references may exist. The array entry will be reused later.
 +    */
  }
  
  static VkResult
-@@ -479,12 +478,9 @@ kgsl_sparse_vma_init(struct tu_device *dev,
- static void
- kgsl_sparse_vma_finish(struct tu_device *dev,
+@@ -479,12 +479,10 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
                         struct tu_sparse_vma *vma)
  {
 -   struct kgsl_gpuobj_free req = {
@@ -2262,7 +2264,8 @@ index 42c3842..f3a2b1c 100644
 +   }
  }
  
-@@ -1193,7 +1187,9 @@ kgsl_device_init(struct tu_device *dev)
+ static VkResult
+@@ -1193,7 +1191,9 @@ kgsl_device_init(struct tu_device *dev)
  static void
  kgsl_device_finish(struct tu_device *dev)
  {
@@ -2274,35 +2277,3 @@ index 42c3842..f3a2b1c 100644
  }
  
  static int
-@@ -1800,6 +1796,10 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
-       device->kgsl_dma_type = TU_KGSL_DMA_TYPE_DMAHEAP;
-    } else {
-       dma_fd = open(ion_path, O_RDONLY);
-+      if (dma_fd < 0) {
-+         mesa_logw("Unable to open %s, VK_KHR_external_memory_fd will be unavailable: %s",
-+                   ion_path, strerror(errno));
-+      }
-       if (dma_fd >= 0) {
-          /* ION_IOC_FREE available only for legacy ION */
-          struct ion_handle_data free = { .handle = 0 };
-@@ -1808,6 +1808,7 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
-          else
-             device->kgsl_dma_type = TU_KGSL_DMA_TYPE_ION;
-       } else {
-+         dma_fd = -1;
-          mesa_logw(
-             "Unable to open neither %s nor %s, VK_KHR_external_memory_fd would be "
-             "unavailable: %s",
-@@ -1882,8 +1883,10 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
- fail:
-    vk_free(&instance->vk.alloc, device);
-    close(fd);
--   if (dma_fd >= 0)
-+   if (dma_fd >= 0) {
-       close(dma_fd);
-+      device->kgsl_dma_fd = -1;
-+   }
-    return result;
- }
--- 
-2.34.1

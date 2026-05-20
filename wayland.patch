@@ -2140,3 +2140,65 @@ index 12b694b4aae..b2b37643450 100644
     return wsi_common_drm_devices_equal(fd, pdevice->local_fd);
  #else
     return true;
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fix <fix@example.com>
+Date: Wed, 20 May 2026 11:00:00 +0800
+Subject: [PATCH] tu/kgsl-drm: fix bo_init_dmabuf function signatures and calls
+
+Fix compilation errors caused by mismatched tu_bo_init_dmabuf() interface.
+
+- Add missing flags parameter in bo_init_new_dmaheap, bo_init_new_ion,
+  and bo_init_new_ion_legacy.
+- Update kgsl_bo_init_dmabuf signature to match expected 5 arguments.
+---
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+index 42c38427cec..abcdef123456 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -98,7 +98,7 @@ bo_init_new_dmaheap(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
+                        strerror(errno));
+    }
+ 
+-   return tu_bo_init_dmabuf(dev, out_bo, -1, alloc.fd);
++   return tu_bo_init_dmabuf(dev, out_bo, size, flags, alloc.fd);
+ }
+ 
+ static VkResult
+@@ -119,7 +119,7 @@ bo_init_new_ion(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
+                        strerror(errno));
+    }
+ 
+-   return tu_bo_init_dmabuf(dev, out_bo, -1, alloc.fd);
++   return tu_bo_init_dmabuf(dev, out_bo, size, flags, alloc.fd);
+ }
+ 
+ static VkResult
+@@ -161,7 +161,7 @@ bo_init_new_ion_legacy(struct tu_device *dev, struct tu_bo **out_bo, uint64_t si
+                        strerror(errno));
+    }
+ 
+-   return tu_bo_init_dmabuf(dev, out_bo, -1, share.fd);
++   return tu_bo_init_dmabuf(dev, out_bo, size, flags, share.fd);
+ }
+ 
+ static VkResult
+@@ -323,10 +323,10 @@ kgsl_bo_init(struct tu_device *dev,
+ 
+ static VkResult
+ kgsl_bo_init_dmabuf(struct tu_device *dev,
+-                    struct tu_bo **out_bo,
+-                    uint64_t size,
+-                    int fd)
++                    struct tu_bo **out_bo, uint64_t size,
++                    enum tu_bo_alloc_flags flags, int fd)
+ {
++   (void)flags;
+    struct kgsl_gpuobj_import_dma_buf import_dmabuf = {
+       .fd = fd,
+    };
+-- 
+2.34.1

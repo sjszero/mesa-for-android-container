@@ -1,31 +1,21 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Fix <fix@example.com>
 Date: Wed, 20 May 2026 12:00:00 +0800
-Subject: [PATCH] tu/kgsl-drm: add missing structure members and initialization
+Subject: [PATCH] tu/kgsl-drm: add missing profiling members and fix shared_fd duplication
 
-Fix memory corruption and crashes caused by the original kgsl-drm patch
-which wrote to non-existent fields in tu_physical_device and tu_device.
+- Add kgsl_profiling_mutex and kgsl_profiling_suballoc to struct tu_device
+- Initialize and destroy them in tu_device_init/finish
+- Unify shared_fd definition in struct tu_bo under single condition
 
-- Add kgsl_dma_fd, kgsl_dma_type, msm_major_version, msm_minor_version
-  to struct tu_physical_device.
-- Add kgsl_profiling_mutex and kgsl_profiling_suballoc to struct tu_device.
-- Remove duplicate 'shared_fd' in tu_bo under TU_HAS_KGSL_DRM.
-- Initialize profiling mutex and suballocator in tu_device_init().
-- Close kgsl_dma_fd when destroying the physical device.
-- Add missing 'flags' parameter to kgsl_bo_init_dmabuf() signature.
-
-Signed-off-by: Fix <fix@example.com>
----
- src/freedreno/vulkan/tu_device.c | 11 +++++++++++
- src/freedreno/vulkan/tu_device.h |  9 +++++++++
- src/freedreno/vulkan/tu_knl.h    | 11 ++++++-----
- 3 files changed, 26 insertions(+), 5 deletions(-)
+ src/freedreno/vulkan/tu_device.c | 19 +++++++++++++++++++
+ src/freedreno/vulkan/tu_device.h |  5 +++++
+ src/freedreno/vulkan/tu_knl.h    | 15 +++++----------
+ 3 files changed, 29 insertions(+), 10 deletions(-)
 
 diff --git a/src/freedreno/vulkan/tu_device.c b/src/freedreno/vulkan/tu_device.c
-index 00000000000..fffffffffff
+index 1234567..abcdefg 100644
 --- a/src/freedreno/vulkan/tu_device.c
 +++ b/src/freedreno/vulkan/tu_device.c
-@@ -1234,6 +1234,17 @@ VkResult tu_device_init(struct tu_device *dev,
+@@ -1200,6 +1200,15 @@ VkResult tu_device_init(struct tu_device *dev,
     }
  #endif
 
@@ -38,11 +28,10 @@ index 00000000000..fffffffffff
 +                          TU_BO_ALLOC_INTERNAL_RESOURCE);
 +   }
 +#endif
-+
     result = tu_device_init_cs(dev);
     if (result != VK_SUCCESS)
        goto fail_cs;
-@@ -1330,6 +1341,12 @@ void tu_device_finish(struct tu_device *dev)
+@@ -1330,6 +1339,12 @@ void tu_device_finish(struct tu_device *dev)
     tu_bo_finish(&dev->global_bo);
     tu_bo_finish(&dev->pipeline_bo);
 
@@ -56,18 +45,9 @@ index 00000000000..fffffffffff
 
     tu_cs_finish(&dev->init_cs);
 diff --git a/src/freedreno/vulkan/tu_device.h b/src/freedreno/vulkan/tu_device.h
-index 08c102ae145..69c6845a230 100644
+index 08c102ae1..69c6845a2 100644
 --- a/src/freedreno/vulkan/tu_device.h
 +++ b/src/freedreno/vulkan/tu_device.h
-@@ -32,7 +32,7 @@
- /* queue types */
- #define TU_QUEUE_GENERAL 0
-
--#define TU_MAX_QUEUE_FAMILIES 2
-+#define TU_MAX_QUEUE_FAMILIES 4
-
- #define TU_BORDER_COLOR_COUNT 4096
-
 @@ -340,6 +340,11 @@ struct tu_device {
     uint64_t protected_context;
  #endif
@@ -81,7 +61,7 @@ index 08c102ae145..69c6845a230 100644
     struct tu_drm_bo pipeline_bo;
     struct tu_drm_bo bcolor_bo;
 diff --git a/src/freedreno/vulkan/tu_knl.h b/src/freedreno/vulkan/tu_knl.h
-index 0426eba53d3..623b21f8de8 100644
+index 0426eba53..623b21f8d 100644
 --- a/src/freedreno/vulkan/tu_knl.h
 +++ b/src/freedreno/vulkan/tu_knl.h
 @@ -50,12 +50,7 @@ struct tu_bo {
@@ -111,5 +91,5 @@ index 0426eba53d3..623b21f8de8 100644
     struct tu_device *devices[TU_MAX_DEVICES];
     uint32_t device_count;
     pthread_mutex_t device_mutex;
---
+-- 
 2.34.1

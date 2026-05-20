@@ -1987,13 +1987,7 @@ index 00000000000..42c38427cec
 +    */
 +   device->has_primary_drm_node = true;
 +
-+   device->primary_drm_node_minor = 0;
-+   device->primary_drm_node_major = 226; /* DRM_MAJOR is typically 226 for msm_drm */
-+   device->has_render_drm_node = true;
-+   device->render_drm_node_minor = 128;  /* Typical render node minor offset */
-+   device->render_drm_node_major = 226;
-+
-+   device->vk.enabled_extensions.drm = true;
++   device->supported_extensions.ext_physical_device_drm = true;
 +
 +   device->ubwc_config.highest_bank_bit = highest_bank_bit;
 +

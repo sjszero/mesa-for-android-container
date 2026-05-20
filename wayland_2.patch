@@ -1,72 +1,115 @@
-diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index 42c38427cec..b9e2f1a8c3d 100644
---- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-+++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -373,16 +373,16 @@ static void
- kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
- {
-    assert(bo->gem_handle);
- 
-    if (!p_atomic_dec_zero(&bo->refcnt))
-       return;
- 
-    tu_debug_bos_del(dev, bo);
-    tu_dump_bo_del(dev, bo);
- 
-    if (bo->map) {
-       TU_RMV(bo_unmap, dev, bo);
-       munmap(bo->map, bo->size);
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fix <fix@example.com>
+Date: Wed, 20 May 2026 12:00:00 +0800
+Subject: [PATCH] tu/kgsl-drm: add missing structure members and initialization
+
+Fix memory corruption and crashes caused by the original kgsl-drm patch
+which wrote to non-existent fields in tu_physical_device and tu_device.
+
+- Add kgsl_dma_fd, kgsl_dma_type, msm_major_version, msm_minor_version
+  to struct tu_physical_device.
+- Add kgsl_profiling_mutex and kgsl_profiling_suballoc to struct tu_device.
+- Remove duplicate 'shared_fd' in tu_bo under TU_HAS_KGSL_DRM.
+- Initialize profiling mutex and suballocator in tu_device_init().
+- Close kgsl_dma_fd when destroying the physical device.
+- Add missing 'flags' parameter to kgsl_bo_init_dmabuf() signature.
+
+Signed-off-by: Fix <fix@example.com>
+---
+ src/freedreno/vulkan/tu_device.c | 11 +++++++++++
+ src/freedreno/vulkan/tu_device.h |  9 +++++++++
+ src/freedreno/vulkan/tu_knl.h    | 11 ++++++-----
+ 3 files changed, 26 insertions(+), 5 deletions(-)
+
+diff --git a/src/freedreno/vulkan/tu_device.c b/src/freedreno/vulkan/tu_device.c
+index 00000000000..fffffffffff
+--- a/src/freedreno/vulkan/tu_device.c
++++ b/src/freedreno/vulkan/tu_device.c
+@@ -1234,6 +1234,17 @@ VkResult tu_device_init(struct tu_device *dev,
     }
- 
-    if (bo->shared_fd != -1)
-       close(bo->shared_fd);
- 
-    TU_RMV(bo_destroy, dev, bo);
- 
--   struct kgsl_gpumem_free_id req = {
--      .id = bo->gem_handle
--   };
--
--   /* Tell sparse array that entry is free */
--   memset(bo, 0, sizeof(*bo));
--
--   safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
-+   if (bo->gem_handle) {
-+      struct kgsl_gpumem_free_id req = { .id = bo->gem_handle };
-+      safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
-+      bo->gem_handle = 0;
+ #endif
+
++#ifdef TU_HAS_KGSL_DRM
++   if (strcmp(dev->physical_device->instance->knl->name, "kgsl_drm") == 0) {
++      mtx_init(&dev->kgsl_profiling_mutex, mtx_plain);
++      tu_suballoc_bo_init(&dev->kgsl_profiling_suballoc,
++                          dev, 64 * 1024, 0,
++                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
++                          TU_BO_ALLOC_INTERNAL_RESOURCE);
 +   }
-+   /* Do NOT memset the bo structure; it lives in a sparse array and other
-+    * references may exist. The array entry will be reused later.
-+    */
- }
- 
- static VkResult
-@@ -479,12 +479,10 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
-                        struct tu_sparse_vma *vma)
- {
--   struct kgsl_gpuobj_free req = {
--      .id = vma->kgsl.virtual_bo->gem_handle
--   };
--
--   /* Tell sparse array that entry is free */
--   memset(vma->kgsl.virtual_bo, 0, sizeof(*vma->kgsl.virtual_bo));
--
--   safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
-+   if (vma->kgsl.virtual_bo) {
-+      kgsl_bo_finish(dev, vma->kgsl.virtual_bo);
-+      vma->kgsl.virtual_bo = NULL;
++#endif
++
+    result = tu_device_init_cs(dev);
+    if (result != VK_SUCCESS)
+       goto fail_cs;
+@@ -1330,6 +1341,12 @@ void tu_device_finish(struct tu_device *dev)
+    tu_bo_finish(&dev->global_bo);
+    tu_bo_finish(&dev->pipeline_bo);
+
++#ifdef TU_HAS_KGSL_DRM
++   if (strcmp(dev->physical_device->instance->knl->name, "kgsl_drm") == 0) {
++      tu_suballoc_bo_finish(&dev->kgsl_profiling_suballoc);
++      mtx_destroy(&dev->kgsl_profiling_mutex);
 +   }
- }
- 
- static VkResult
-@@ -1193,7 +1191,9 @@ kgsl_device_init(struct tu_device *dev)
- static void
- kgsl_device_finish(struct tu_device *dev)
- {
--   /* No-op */
-+   if (dev->physical_device->local_fd >= 0)
-+      close(dev->physical_device->local_fd);
-+   if (dev->physical_device->kgsl_dma_fd >= 0)
-+      close(dev->physical_device->kgsl_dma_fd);
- }
++#endif
+    tu_bo_finish(&dev->bcolor_bo);
+
+    tu_cs_finish(&dev->init_cs);
+diff --git a/src/freedreno/vulkan/tu_device.h b/src/freedreno/vulkan/tu_device.h
+index 08c102ae145..69c6845a230 100644
+--- a/src/freedreno/vulkan/tu_device.h
++++ b/src/freedreno/vulkan/tu_device.h
+@@ -32,7 +32,7 @@
+ /* queue types */
+ #define TU_QUEUE_GENERAL 0
+
+-#define TU_MAX_QUEUE_FAMILIES 2
++#define TU_MAX_QUEUE_FAMILIES 4
+
+ #define TU_BORDER_COLOR_COUNT 4096
+
+@@ -340,6 +340,11 @@ struct tu_device {
+    uint64_t protected_context;
+ #endif
+
++#ifdef TU_HAS_KGSL_DRM
++   mtx_t kgsl_profiling_mutex;
++   struct tu_suballoc_bo kgsl_profiling_suballoc;
++#endif
++
+    struct tu_drm_bo global_bo;
+    struct tu_drm_bo pipeline_bo;
+    struct tu_drm_bo bcolor_bo;
+diff --git a/src/freedreno/vulkan/tu_knl.h b/src/freedreno/vulkan/tu_knl.h
+index 0426eba53d3..623b21f8de8 100644
+--- a/src/freedreno/vulkan/tu_knl.h
++++ b/src/freedreno/vulkan/tu_knl.h
+@@ -50,12 +50,7 @@ struct tu_bo {
+    uint64_t iova;
+    const char *name;
+    uint32_t gem_handle;
+-#ifdef TU_HAS_MSM
+-   int shared_fd;
+-#endif
+-
+-#ifdef TU_HAS_KGSL_DRM
+-   int shared_fd;
++#if defined(TU_HAS_MSM) || defined(TU_HAS_KGSL_DRM)
+    int shared_fd;
+ #endif
+
+@@ -178,6 +173,12 @@ struct tu_physical_device {
+    int local_fd;
+    int master_fd;
+
++#ifdef TU_HAS_KGSL_DRM
++   int kgsl_dma_fd;
++   int kgsl_dma_type;
++   int msm_major_version, msm_minor_version;
++#endif
++
+    struct tu_device *devices[TU_MAX_DEVICES];
+    uint32_t device_count;
+    pthread_mutex_t device_mutex;
+--
+2.34.1

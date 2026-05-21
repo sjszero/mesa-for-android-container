@@ -112,7 +112,7 @@ new file mode 100644
 index 00000000000..42c38427cec
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1937 @@
+@@ -0,0 +1,1935 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -1991,8 +1991,6 @@ index 00000000000..42c38427cec
 +   device->has_render_drm_node = true;
 +   device->render_drm_node_minor = 128;  /* Typical render node minor offset */
 +   device->render_drm_node_major = 226;
-+
-+   device->supported_extensions.ext_physical_device_drm = true;
 +
 +   device->ubwc_config.highest_bank_bit = highest_bank_bit;
 +

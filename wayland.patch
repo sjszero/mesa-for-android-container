@@ -2219,7 +2219,7 @@ diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_k
 index 42c38427cec..b3c5d8e9f1a 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -1746,10 +1746,18 @@ kgsl_queue_submit(struct tu_queue *queue, void *_submit,
+@@ -1746,8 +1746,18 @@ kgsl_queue_submit(struct tu_queue *queue, void *_submit,
  static VkResult
  kgsl_device_init(struct tu_device *dev)
  {

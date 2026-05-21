@@ -1744,8 +1744,8 @@ index 00000000000..42c38427cec
 +kgsl_device_init(struct tu_device *dev)
 +{
 +   mtx_init(&dev->kgsl_profiling_mutex, mtx_plain);
-+   tu_suballoc_bo_init(&dev->kgsl_profiling_suballoc, dev, 4096,
-+                       TU_BO_ALLOC_INTERNAL_RESOURCE, "kgsl profiling");
++   tu_bo_suballocator_init(&dev->kgsl_profiling_suballoc, dev, 4096,
++                           TU_BO_ALLOC_INTERNAL_RESOURCE, "kgsl profiling");
 +   dev->fd = dev->physical_device->local_fd;
 +   return VK_SUCCESS;
 +}
@@ -1753,7 +1753,7 @@ index 00000000000..42c38427cec
 +static void
 +kgsl_device_finish(struct tu_device *dev)
 +{
-+   tu_suballoc_bo_finish(&dev->kgsl_profiling_suballoc);
++   tu_bo_suballocator_finish(&dev->kgsl_profiling_suballoc);
 +   mtx_destroy(&dev->kgsl_profiling_mutex);
 +}
 +

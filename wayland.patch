@@ -2133,14 +2133,17 @@ diff --git a/src/freedreno/vulkan/tu_wsi.cc b/src/freedreno/vulkan/tu_wsi.cc
 index 12b694b4aae..b2b37643450 100644
 --- a/src/freedreno/vulkan/tu_wsi.cc
 +++ b/src/freedreno/vulkan/tu_wsi.cc
-@@ -27,6 +27,14 @@ tu_wsi_can_present_on_device(VkPhysicalDevice physicalDevice, int fd)
+@@ -24,9 +24,18 @@ tu_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
+ static bool
+ tu_wsi_can_present_on_device(VkPhysicalDevice physicalDevice, int fd)
  {
  #ifdef HAVE_LIBDRM
     VK_FROM_HANDLE(tu_physical_device, pdevice, physicalDevice);
 +
-+   /* KGSL doesn't have DRM render nodes, so drmGetDevice2() will always
-+    * fail on a KGSL fd.  In the Termux/X11 environment the DRI3 fd from
-+    * the X server is for the same physical GPU, so treat it as compatible.
++   /* KGSL (including kgsl-drm) doesn't have DRM render nodes, so
++    * drmGetDevice2() will always fail on a KGSL fd. In the LXC/Wayland
++    * environment, treat it as compatible to avoid falling back to
++    * CPU blit path which causes cleanup order issues.
 +    */
 +   if (strcmp(pdevice->instance->knl->name, "kgsl") == 0 ||
 +       strcmp(pdevice->instance->knl->name, "kgsl_drm") == 0)

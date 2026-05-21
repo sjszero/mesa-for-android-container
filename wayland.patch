@@ -2218,28 +2218,23 @@ diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_k
 index 42c38427cec..f7e2a1b3c4d 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -1746,6 +1746,9 @@ kgsl_queue_submit(struct tu_queue *queue, void *_submit,
- static VkResult
- kgsl_device_init(struct tu_device *dev)
- {
-+   mtx_init(&dev->kgsl_profiling_mutex, mtx_plain);
-+   tu_suballoc_bo_init(&dev->kgsl_profiling_suballoc, dev, 4096,
-+                       TU_BO_ALLOC_INTERNAL_RESOURCE, "kgsl profiling");
-    dev->fd = dev->physical_device->local_fd;
-    return VK_SUCCESS;
- }
-@@ -1753,7 +1756,8 @@ kgsl_device_init(struct tu_device *dev)
- static void
- kgsl_device_finish(struct tu_device *dev)
- {
--   /* No-op */
-+   tu_suballoc_bo_finish(&dev->kgsl_profiling_suballoc);
-+   mtx_destroy(&dev->kgsl_profiling_mutex);
+@@ -457,10 +457,13 @@ kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
+    safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
  }
  
- static int
-@@ -1885,8 +1889,17 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
-       .id = vma->kgsl.virtual_bo->gem_handle
+-static VkResult
++static VkResult
+ kgsl_sparse_vma_init(struct tu_device *dev,
+                      struct vk_object_base *base,
+                      struct tu_sparse_vma *out_vma,
+@@ -514,12 +517,21 @@ kgsl_sparse_vma_init(struct tu_device *dev,
+ static void
+ kgsl_sparse_vma_finish(struct tu_device *dev,
+                        struct tu_sparse_vma *vma)
+ {
+    struct kgsl_gpuobj_free req = {
+-      .id = vma->kgsl.virtual_bo->gem_handle
++      .id = vma->kgsl.virtual_bo->gem_handle,
     };
  
 -   /* Tell sparse array that entry is free */
@@ -2258,5 +2253,25 @@ index 42c38427cec..f7e2a1b3c4d 100644
  
     safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
  }
+@@ -1746,6 +1758,9 @@ kgsl_queue_submit(struct tu_queue *queue, void *_submit,
+ static VkResult
+ kgsl_device_init(struct tu_device *dev)
+ {
++   mtx_init(&dev->kgsl_profiling_mutex, mtx_plain);
++   tu_suballoc_bo_init(&dev->kgsl_profiling_suballoc, dev, 4096,
++                       TU_BO_ALLOC_INTERNAL_RESOURCE, "kgsl profiling");
+    dev->fd = dev->physical_device->local_fd;
+    return VK_SUCCESS;
+ }
+@@ -1753,7 +1768,8 @@ kgsl_device_init(struct tu_device *dev)
+ static void
+ kgsl_device_finish(struct tu_device *dev)
+ {
+-   /* No-op */
++   tu_suballoc_bo_finish(&dev->kgsl_profiling_suballoc);
++   mtx_destroy(&dev->kgsl_profiling_mutex);
+ }
+ 
+ static int
 -- 
 2.34.1

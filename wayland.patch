@@ -112,7 +112,7 @@ new file mode 100644
 index 00000000000..42c38427cec
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1925 @@
+@@ -0,0 +1,1910 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT

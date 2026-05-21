@@ -2200,7 +2200,7 @@ index 42c38427cec..abcdef123456 100644
  
  static VkResult
  kgsl_bo_init_dmabuf(struct tu_device *dev,
--                    struct tu_bo **out_bo,
+-                    struct tu_bo *out_bo,
 -                    uint64_t size,
 -                    int fd)
 +                    struct tu_bo **out_bo, uint64_t size,
@@ -2220,33 +2220,9 @@ Subject: [PATCH] tu/kgsl-drm: fix segfault on device destroy
 Wait for all GPU work to complete before closing the KGSL fd.
 Also ensure Wayland surfaces are destroyed before the display
 connection is closed in the WSI path for KGSL devices.
-
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 8 +++++++-
  src/freedreno/vulkan/tu_wsi.cc          | 9 +++++++++
- 2 files changed, 16 insertions(+), 1 deletion(-)
+ 1 files changed, 9 insertions(+), 0 deletions(-)
 
-diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index 42c38427cec..a1b2c3d4e5f 100644
---- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-+++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -1798,7 +1798,16 @@ kgsl_device_init(struct tu_device *dev)
- static void
- kgsl_device_finish(struct tu_device *dev)
- {
--   /* No-op */
-+   /* Wait for all queues to finish last submitted work */
-+   for (uint32_t i = 0; i < TU_MAX_QUEUE_FAMILIES; i++) {
-+      for (uint32_t q = 0; q < dev->queue_count[i]; q++) {
-+         struct tu_queue *queue = &dev->queues[i][q];
-+         if (queue->fence != ~0U) {
-+            /* Use the existing wait function via knl */
-+            dev->knl->queue_wait_fence(queue, queue->fence, UINT64_MAX);
-+         }
-+      }
-+   }
- }
- 
- static int
 diff --git a/src/freedreno/vulkan/tu_wsi.cc b/src/freedreno/vulkan/tu_wsi.cc
 index b2b37643450..c3d4e5f6a7b 100644
 --- a/src/freedreno/vulkan/tu_wsi.cc

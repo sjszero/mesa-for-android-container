@@ -2238,8 +2238,6 @@ index 42c38427cec..b3c5d8e9f1a 100644
 +}
 +
  static int
- kgsl_device_get_gpu_timestamp(struct tu_device *dev, uint64_t *ts)
- {
 @@ -1883,12 +1891,19 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
                         struct tu_sparse_vma *vma)
  {

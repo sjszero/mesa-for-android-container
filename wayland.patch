@@ -2202,3 +2202,86 @@ index 42c38427cec..abcdef123456 100644
     };
 -- 
 2.34.1
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fix <fix@example.com>
+Date: Thu, 21 May 2026 10:00:00 +0800
+Subject: [PATCH] tu/kgsl-drm: fix crash on device shutdown
+
+- Remove duplicate shared_fd member in tu_bo (causes ABI mismatch)
+- Initialize kgsl_profiling_mutex and suballoc in device init
+- Destroy suballoc in device finish
+- Fix sparse VMA cleanup: do not memset bo entry after free
+---
+ src/freedreno/vulkan/tu_knl.h           |  4 ----
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 19 ++++++++++++++++++-
+ 2 files changed, 18 insertions(+), 5 deletions(-)
+
+diff --git a/src/freedreno/vulkan/tu_knl.h b/src/freedreno/vulkan/tu_knl.h
+index 623b21f8de8..0426eba53d3 100644
+--- a/src/freedreno/vulkan/tu_knl.h
++++ b/src/freedreno/vulkan/tu_knl.h
+@@ -54,10 +54,6 @@ struct tu_bo {
+    int shared_fd;
+ #endif
+ 
+-#ifdef TU_HAS_KGSL_DRM
+-   int shared_fd;
+-#endif
+-
+    bool implicit_sync : 1;
+    bool never_unmap : 1;
+    bool cached_non_coherent : 1;
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+index 42c38427cec..abcdef123456 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -1748,6 +1748,9 @@ kgsl_queue_submit(struct tu_queue *queue, void *_submit,
+ static VkResult
+ kgsl_device_init(struct tu_device *dev)
+ {
++   mtx_init(&dev->kgsl_profiling_mutex, mtx_plain);
++   tu_suballoc_bo_init(&dev->kgsl_profiling_suballoc, dev, 4096,
++                       TU_BO_ALLOC_INTERNAL_RESOURCE, "kgsl profiling");
+    dev->fd = dev->physical_device->local_fd;
+    return VK_SUCCESS;
+ }
+@@ -1755,7 +1758,8 @@ kgsl_device_init(struct tu_device *dev)
+ static void
+ kgsl_device_finish(struct tu_device *dev)
+ {
+-   /* No-op */
++   tu_suballoc_bo_finish(&dev->kgsl_profiling_suballoc);
++   mtx_destroy(&dev->kgsl_profiling_mutex);
+ }
+ 
+ static int
+@@ -1885,11 +1889,24 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
+                        struct tu_sparse_vma *vma)
+ {
+    struct kgsl_gpuobj_free req = {
+-      .id = vma->kgsl.virtual_bo->gem_handle
++      .id = vma->kgsl.virtual_bo->gem_handle,
+    };
+ 
+-   /* Tell sparse array that entry is free */
+-   memset(vma->kgsl.virtual_bo, 0, sizeof(*vma->kgsl.virtual_bo));
++   /* Do NOT memset the bo entry here! The bo is managed by the device's
++    * sparse array and will be cleared when tu_device_finish calls
++    * tu_bo_finish on it. Memset here corrupts the array's bookkeeping
++    * and leads to use-after-free.
++    *
++    * Instead, we just mark the bo as invalid for future use by setting
++    * gem_handle to 0. The rest of the fields will be overwritten when
++    * the array slot is reused.
++    */
++   if (vma->kgsl.virtual_bo) {
++      vma->kgsl.virtual_bo->gem_handle = 0;
++      vma->kgsl.virtual_bo->size = 0;
++      vma->kgsl.virtual_bo->iova = 0;
++      vma->kgsl.virtual_bo = NULL;
++   }
+ 
+    safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
+ }
+-- 
+2.34.1

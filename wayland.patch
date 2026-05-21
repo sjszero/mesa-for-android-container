@@ -112,7 +112,7 @@ new file mode 100644
 index 00000000000..42c38427cec
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1919 @@
+@@ -0,0 +1,1920 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -1753,7 +1753,8 @@ index 00000000000..42c38427cec
 +static void
 +kgsl_device_finish(struct tu_device *dev)
 +{
-+   /* No-op */
++   tu_suballoc_bo_finish(&dev->kgsl_profiling_suballoc);
++   mtx_destroy(&dev->kgsl_profiling_mutex);
 +}
 +
 +static int
@@ -2212,78 +2213,5 @@ index 42c38427cec..abcdef123456 100644
     struct kgsl_gpuobj_import_dma_buf import_dmabuf = {
        .fd = fd,
     };
--- 
-2.34.1
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fix <fix@example.com>
-Date: Thu, 21 May 2026 10:00:00 +0800
-Subject: [PATCH] tu/kgsl-drm: fix crash due to missing init and corrupt vma cleanup
-
-- Initialize kgsl_profiling_mutex and suballoc in kgsl_device_init
-- Properly destroy them in kgsl_device_finish (replacing no-op)
-- Do not memset virtual_bo in kgsl_sparse_vma_finish (causes use-after-free)
-
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 17 +++++++++++++++--
- 1 file changed, 15 insertions(+), 2 deletions(-)
-
-diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index 42c38427cec..f7e2a1b3c4d 100644
---- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-+++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -457,10 +457,13 @@ kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
-    safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
- }
- 
--static VkResult
-+static VkResult
- kgsl_sparse_vma_init(struct tu_device *dev,
-                      struct vk_object_base *base,
-                      struct tu_sparse_vma *out_vma,
-@@ -518,12 +521,21 @@ kgsl_sparse_vma_init(struct tu_device *dev,
- static void
- kgsl_sparse_vma_finish(struct tu_device *dev,
-                        struct tu_sparse_vma *vma)
- {
-    struct kgsl_gpuobj_free req = {
--      .id = vma->kgsl.virtual_bo->gem_handle
-+      .id = vma->kgsl.virtual_bo->gem_handle,
-    };
- 
--   /* Tell sparse array that entry is free */
--   memset(vma->kgsl.virtual_bo, 0, sizeof(*vma->kgsl.virtual_bo));
-+   /* Do NOT memset the entire bo entry! The bo is managed by the device's
-+    * sparse array and will be cleared when tu_device_finish calls
-+    * tu_bo_finish on it. Memset here corrupts the array's bookkeeping
-+    * and leads to use-after-free.
-+    */
-+   if (vma->kgsl.virtual_bo) {
-+      vma->kgsl.virtual_bo->gem_handle = 0;
-+      vma->kgsl.virtual_bo->size = 0;
-+      vma->kgsl.virtual_bo->iova = 0;
-+      vma->kgsl.virtual_bo = NULL;
-+   }
- 
-    safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
- }
-@@ -1746,6 +1758,9 @@ kgsl_queue_submit(struct tu_queue *queue, void *_submit,
- static VkResult
- kgsl_device_init(struct tu_device *dev)
- {
-+   mtx_init(&dev->kgsl_profiling_mutex, mtx_plain);
-+   tu_suballoc_bo_init(&dev->kgsl_profiling_suballoc, dev, 4096,
-+                       TU_BO_ALLOC_INTERNAL_RESOURCE, "kgsl profiling");
-    dev->fd = dev->physical_device->local_fd;
-    return VK_SUCCESS;
- }
-@@ -1753,7 +1768,8 @@ kgsl_device_init(struct tu_device *dev)
- static void
- kgsl_device_finish(struct tu_device *dev)
- {
--   /* No-op */
-+   tu_suballoc_bo_finish(&dev->kgsl_profiling_suballoc);
-+   mtx_destroy(&dev->kgsl_profiling_mutex);
- }
- 
- static int
 -- 
 2.34.1

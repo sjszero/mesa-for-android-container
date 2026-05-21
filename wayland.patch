@@ -542,10 +542,13 @@ index 00000000000..42c38427cec
 +   if (bo->map) {
 +      TU_RMV(bo_unmap, dev, bo);
 +      munmap(bo->map, bo->size);
++      bo->map = NULL;
 +   }
 +
-+   if (bo->shared_fd != -1)
++   if (bo->shared_fd != -1) {
 +      close(bo->shared_fd);
++      bo->shared_fd = -1;
++   }
 +
 +   TU_RMV(bo_destroy, dev, bo);
 +
@@ -553,12 +556,13 @@ index 00000000000..42c38427cec
 +      .id = bo->gem_handle
 +   };
 +
-+   /* Do NOT memset the entire bo entry! The bo is managed by the device's
-+    * sparse array and will be cleared when tu_device_finish calls
-+    * tu_bo_finish on it. Memset here corrupts the array's bookkeeping
-+    * and leads to use-after-free.
++   /* Do NOT memset the entire bo entry! It corrupts the sparse array.
++    * The device's bo_map array will handle cleanup.
 +    */
 +   safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
++
++   /* Prevent accidental reuse */
++   bo->gem_handle = 0;
 +}
 +
 +static VkResult
@@ -640,11 +644,7 @@ index 00000000000..42c38427cec
 +      .id = vma->kgsl.virtual_bo->gem_handle,
 +   };
 +
-+   /* Do NOT memset the entire bo entry! The bo is managed by the device's
-+    * sparse array and will be cleared when tu_device_finish calls
-+    * tu_bo_finish on it. Memset here corrupts the array's bookkeeping
-+    * and leads to use-after-free.
-+    */
++   /* Do NOT memset the entire bo entry! */
 +   if (vma->kgsl.virtual_bo) {
 +      vma->kgsl.virtual_bo->gem_handle = 0;
 +      vma->kgsl.virtual_bo->size = 0;

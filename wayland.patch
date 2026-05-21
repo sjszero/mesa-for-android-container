@@ -553,9 +553,11 @@ index 00000000000..42c38427cec
 +      .id = bo->gem_handle
 +   };
 +
-+   /* Tell sparse array that entry is free */
-+   memset(bo, 0, sizeof(*bo));
-+
++   /* Do NOT memset the entire bo entry! The bo is managed by the device's
++    * sparse array and will be cleared when tu_device_finish calls
++    * tu_bo_finish on it. Memset here corrupts the array's bookkeeping
++    * and leads to use-after-free.
++    */
 +   safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
 +}
 +
@@ -1755,6 +1757,9 @@ index 00000000000..42c38427cec
 +{
 +   tu_bo_suballocator_finish(&dev->kgsl_profiling_suballoc);
 +   mtx_destroy(&dev->kgsl_profiling_mutex);
++
++   if (dev->physical_device->kgsl_dma_fd >= 0)
++      close(dev->physical_device->kgsl_dma_fd);
 +}
 +
 +static int

@@ -2207,19 +2207,18 @@ From: fix <fix@example.com>
 Date: Thu, 21 May 2026 10:00:00 +0800
 Subject: [PATCH] tu/kgsl-drm: fix crash due to missing init and corrupt vma cleanup
 
-- Initialize kgsl_profiling_mutex and suballoc in device init
-- Destroy them in device finish
+- Initialize kgsl_profiling_mutex and suballoc in kgsl_device_init
+- Properly destroy them in kgsl_device_finish (replacing no-op)
 - Do not memset virtual_bo in kgsl_sparse_vma_finish (causes use-after-free)
-- Clear pointer and gem_handle instead
 
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 19 +++++++++++++++++--
- 1 file changed, 17 insertions(+), 2 deletions(-)
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
 
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index 42c38427cec..b3c5d8e9f1a 100644
+index 42c38427cec..f7e2a1b3c4d 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -1746,8 +1746,18 @@ kgsl_queue_submit(struct tu_queue *queue, void *_submit,
+@@ -1746,6 +1746,9 @@ kgsl_queue_submit(struct tu_queue *queue, void *_submit,
  static VkResult
  kgsl_device_init(struct tu_device *dev)
  {
@@ -2229,21 +2228,18 @@ index 42c38427cec..b3c5d8e9f1a 100644
     dev->fd = dev->physical_device->local_fd;
     return VK_SUCCESS;
  }
- 
-+static void
-+kgsl_device_finish(struct tu_device *dev)
-+{
+@@ -1753,7 +1756,8 @@ kgsl_device_init(struct tu_device *dev)
+ static void
+ kgsl_device_finish(struct tu_device *dev)
+ {
+-   /* No-op */
 +   tu_suballoc_bo_finish(&dev->kgsl_profiling_suballoc);
 +   mtx_destroy(&dev->kgsl_profiling_mutex);
-+}
-+
+ }
+ 
  static int
-@@ -1883,12 +1891,19 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
-                        struct tu_sparse_vma *vma)
- {
-    struct kgsl_gpuobj_free req = {
--      .id = vma->kgsl.virtual_bo->gem_handle
-+      .id = vma->kgsl.virtual_bo->gem_handle,
+@@ -1885,8 +1889,17 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
+       .id = vma->kgsl.virtual_bo->gem_handle
     };
  
 -   /* Tell sparse array that entry is free */
@@ -2262,21 +2258,5 @@ index 42c38427cec..b3c5d8e9f1a 100644
  
     safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
  }
-@@ -1990,6 +2005,7 @@ static const struct tu_knl kgsl_drm_knl_funcs = {
-       .name = "kgsl_drm",
- 
-       .device_init = kgsl_device_init,
-+      .device_finish = kgsl_device_finish,
-       .device_get_gpu_timestamp = kgsl_device_get_gpu_timestamp,
-       .device_get_suspend_count = kgsl_device_get_suspend_count,
-       .device_check_status = kgsl_device_check_status,
-@@ -2115,7 +2131,6 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
-    device->has_sparse_prr = device->has_sparse;
-    device->has_lazy_bos = device->has_sparse;
-    get_kgsl_prop(fd, KGSL_PROP_GPU_VA64_SIZE, &device->va_size,
--                 sizeof(device->va_size));
-    /* We don't actually use the VMA, but set a fake offset so that it doesn't
-     * think we're trying to allocate 0 and assert.
-     */
 -- 
 2.34.1

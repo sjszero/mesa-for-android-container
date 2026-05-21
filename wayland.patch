@@ -2227,7 +2227,7 @@ index 42c38427cec..f7e2a1b3c4d 100644
  kgsl_sparse_vma_init(struct tu_device *dev,
                       struct vk_object_base *base,
                       struct tu_sparse_vma *out_vma,
-@@ -514,12 +517,21 @@ kgsl_sparse_vma_init(struct tu_device *dev,
+@@ -518,12 +521,21 @@ kgsl_sparse_vma_init(struct tu_device *dev,
  static void
  kgsl_sparse_vma_finish(struct tu_device *dev,
                         struct tu_sparse_vma *vma)

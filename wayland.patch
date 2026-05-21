@@ -2229,17 +2229,20 @@ diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_k
 index 42c38427cec..a1b2c3d4e5f 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -1798,7 +1798,13 @@ kgsl_device_init(struct tu_device *dev)
+@@ -1798,7 +1798,16 @@ kgsl_device_init(struct tu_device *dev)
  static void
  kgsl_device_finish(struct tu_device *dev)
  {
 -   /* No-op */
-+   /* Wait for all outstanding GPU work to finish before closing the fd.
-+    * This avoids accessing freed BOs or Wayland buffers during destruction.
-+    */
-+   VkResult ret = tu_device_wait_idle(dev);
-+   if (ret != VK_SUCCESS) {
-+      mesa_loge("kgsl_device_finish: tu_device_wait_idle failed (%d)", ret);
++   /* Wait for all queues to finish last submitted work */
++   for (uint32_t i = 0; i < TU_MAX_QUEUE_FAMILIES; i++) {
++      for (uint32_t q = 0; q < dev->queue_count[i]; q++) {
++         struct tu_queue *queue = &dev->queues[i][q];
++         if (queue->fence != ~0U) {
++            /* Use the existing wait function via knl */
++            dev->knl->queue_wait_fence(queue, queue->fence, UINT64_MAX);
++         }
++      }
 +   }
  }
  

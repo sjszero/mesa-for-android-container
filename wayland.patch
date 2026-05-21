@@ -2152,7 +2152,6 @@ index 12b694b4aae..b2b37643450 100644
     return wsi_common_drm_devices_equal(fd, pdevice->local_fd);
  #else
     return true;
-
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: fix <fix@example.com>
 Date: Wed, 20 May 2026 11:00:00 +0800

@@ -112,7 +112,7 @@ new file mode 100644
 index 00000000000..42c38427cec
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1915 @@
+@@ -0,0 +1,1907 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -199,9 +199,6 @@ index 00000000000..42c38427cec
 +bo_init_new_dmaheap(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
 +                enum tu_bo_alloc_flags flags)
 +{
-+   if (dev->physical_device->kgsl_dma_fd < 0)
-+      return vk_error(dev, VK_ERROR_INITIALIZATION_FAILED);
-+
 +   struct dma_heap_allocation_data alloc = {
 +      .len = size,
 +      .fd_flags = O_RDWR | O_CLOEXEC,
@@ -223,9 +220,6 @@ index 00000000000..42c38427cec
 +bo_init_new_ion(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
 +                enum tu_bo_alloc_flags flags)
 +{
-+   if (dev->physical_device->kgsl_dma_fd < 0)
-+      return vk_error(dev, VK_ERROR_INITIALIZATION_FAILED);
-+
 +   struct ion_new_allocation_data alloc = {
 +      .len = size,
 +      .heap_id_mask = KGSL_ION_SYSTEM_HEAP_MASK,
@@ -247,9 +241,6 @@ index 00000000000..42c38427cec
 +bo_init_new_ion_legacy(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
 +                       enum tu_bo_alloc_flags flags)
 +{
-+   if (dev->physical_device->kgsl_dma_fd < 0)
-+      return vk_error(dev, VK_ERROR_INITIALIZATION_FAILED);
-+
 +   struct ion_allocation_data alloc = {
 +      .len = size,
 +      .align = 4096,
@@ -1877,7 +1868,7 @@ index 00000000000..42c38427cec
 +   int dma_fd;
 +
 +   dma_fd = open(dma_heap_path, O_RDONLY);
-+   if (dma_fd >= 0 && dma_fd != -1) {
++   if (dma_fd >= 0) {
 +      device->kgsl_dma_type = TU_KGSL_DMA_TYPE_DMAHEAP;
 +   } else {
 +      dma_fd = open(ion_path, O_RDONLY);
@@ -1890,11 +1881,6 @@ index 00000000000..42c38427cec
 +            device->kgsl_dma_type = TU_KGSL_DMA_TYPE_ION;
 +      } else {
 +         mesa_logw(
-+            "WARNING: No dma-heap or ION device found. "
-+            "Wayland/external memory will not work.\n");
-+         close(fd);
-+         vk_free(&instance->vk.alloc, device);
-+         return vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
 +            "Unable to open neither %s nor %s, VK_KHR_external_memory_fd would be "
 +            "unavailable: %s",
 +            dma_heap_path, ion_path, strerror(errno));
@@ -1903,7 +1889,6 @@ index 00000000000..42c38427cec
 +
 +   VkResult result = VK_ERROR_INITIALIZATION_FAILED;
 +
-+   /* kgsl device queries ... */
 +   struct kgsl_devinfo info;
 +   if (get_kgsl_prop(fd, KGSL_PROP_DEVICE_INFO, &info, sizeof(info)))
 +      goto fail;
@@ -1931,15 +1916,7 @@ index 00000000000..42c38427cec
 +   /* kgsl version check? */
 +
 +   device->instance = instance;
-+   device->master_fd = dup(fd);
-+   if (device->master_fd < 0) {
-+      close(fd);
-+      if (dma_fd >= 0)
-+         close(dma_fd);
-+      vk_free(&instance->vk.alloc, device);
-+      return vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
-+                       "failed to dup master fd for kgsl");
-+   }
++   device->master_fd = -1;
 +   device->local_fd = fd;
 +   device->kgsl_dma_fd = dma_fd;
 +
@@ -2038,7 +2015,7 @@ index 00000000000..42c38427cec
 +
 +fail:
 +   vk_free(&instance->vk.alloc, device);
-+   if (fd >= 0) close(fd);
++   close(fd);
 +   if (dma_fd >= 0)
 +      close(dma_fd);
 +   return result;
@@ -2148,18 +2125,16 @@ diff --git a/src/freedreno/vulkan/tu_wsi.cc b/src/freedreno/vulkan/tu_wsi.cc
 index 12b694b4aae..b2b37643450 100644
 --- a/src/freedreno/vulkan/tu_wsi.cc
 +++ b/src/freedreno/vulkan/tu_wsi.cc
-@@ -27,6 +27,16 @@ tu_wsi_can_present_on_device(VkPhysicalDevice physicalDevice, int fd)
+@@ -27,6 +27,14 @@ tu_wsi_can_present_on_device(VkPhysicalDevice physicalDevice, int fd)
  {
  #ifdef HAVE_LIBDRM
     VK_FROM_HANDLE(tu_physical_device, pdevice, physicalDevice);
 +
-+   /* KGSL devices have no DRM render node, but they can present via Wayland
-+    * using dma-buf. Override the DRM check to always return true for KGSL
-+    * (including kgsl-drm backend).
++   /* KGSL doesn't have DRM render nodes, so drmGetDevice2() will always
++    * fail on a KGSL fd.  In the Termux/X11 environment the DRI3 fd from
++    * the X server is for the same physical GPU, so treat it as compatible.
 +    */
-+   if (pdevice->instance->knl->name &&
-+       (strcmp(pdevice->instance->knl->name, "kgsl") == 0 ||
-+        strcmp(pdevice->instance->knl->name, "kgsl_drm") == 0))
++   if (strcmp(pdevice->instance->knl->name, "kgsl") == 0)
 +      return true;
 +
     return wsi_common_drm_devices_equal(fd, pdevice->local_fd);
@@ -2177,8 +2152,8 @@ Fix compilation errors caused by mismatched tu_bo_init_dmabuf() interface.
   and bo_init_new_ion_legacy.
 - Update kgsl_bo_init_dmabuf signature to match expected 5 arguments.
 ---
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 16 ++++++++++------
- 1 file changed, 10 insertions(+), 6 deletions(-)
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
 
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 index 42c38427cec..abcdef123456 100644
@@ -2211,7 +2186,7 @@ index 42c38427cec..abcdef123456 100644
  }
  
  static VkResult
-@@ -323,10 +323,14 @@ kgsl_bo_init(struct tu_device *dev,
+@@ -323,10 +323,10 @@ kgsl_bo_init(struct tu_device *dev,
  
  static VkResult
  kgsl_bo_init_dmabuf(struct tu_device *dev,
@@ -2222,10 +2197,6 @@ index 42c38427cec..abcdef123456 100644
 +                    enum tu_bo_alloc_flags flags, int fd)
  {
 +   (void)flags;
-+
-+   if (fd < 0)
-+      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
-+
     struct kgsl_gpuobj_import_dma_buf import_dmabuf = {
        .fd = fd,
     };

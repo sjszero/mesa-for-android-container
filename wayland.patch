@@ -2335,6 +2335,38 @@ index 42c38427cec..abcdef123456 100644
 -- 
 2.34.1
 From: Fix <fix@example.com>
+Date: Fri, 22 May 2026 12:00:00 +0800
+Subject: [PATCH] tu/kgsl-drm: fix sparse vma finish memory corruption
+
+Do not memset the virtual bo after freeing, as the bo may still be
+referenced elsewhere. Instead call tu_bo_finish to properly release
+the bo and update the sparse array.
+
+---
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+index 42c38427cec..c5a7b9d3e1f 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -505,8 +505,11 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
+       .id = vma->kgsl.virtual_bo->gem_handle
+    };
+ 
+-   /* Tell sparse array that entry is free */
+-   memset(vma->kgsl.virtual_bo, 0, sizeof(*vma->kgsl.virtual_bo));
++   /* Release the virtual bo, which will also clear the sparse array entry
++    * and free the underlying kernel object.
++    */
++   tu_bo_finish(dev, vma->kgsl.virtual_bo);
++   vma->kgsl.virtual_bo = NULL;
+ 
+    safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
+ }
+-- 
+2.34.1
+From: Fix <fix@example.com>
 Date: Fri, 22 May 2026 12:05:00 +0800
 Subject: [PATCH] tu/kgsl-drm: validate kgsl_dma_fd before use
 

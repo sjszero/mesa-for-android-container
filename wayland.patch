@@ -112,7 +112,7 @@ new file mode 100644
 index 00000000000..42c38427cec
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1986 @@
+@@ -0,0 +1,2038 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -1910,6 +1910,58 @@ index 00000000000..42c38427cec
 +   device->dev_id.chip_id = info.chip_id;
 +   device->gmem_size = debug_get_num_option("TU_GMEM", info.gmem_sizebytes);
 +   device->gmem_base = gmem_iova;
++
++   device->has_raytracing = tu_kgsl_get_raytracing(kgsl_fd);
++   device->submitqueue_priority_count = 1;
++
++   device->has_set_iova = kgsl_is_memory_type_supported(
++      kgsl_fd, KGSL_MEMFLAGS_USE_CPU_MAP);
++
++   device->has_cached_coherent_memory = kgsl_is_memory_type_supported(
++      kgsl_fd, KGSL_MEMFLAGS_IOCOHERENT |
++             (KGSL_CACHEMODE_WRITEBACK << KGSL_CACHEMODE_SHIFT));
++
++   device->has_sparse = kgsl_is_virtual_bo_supported(kgsl_fd);
++   device->has_sparse_prr = device->has_sparse;
++   device->has_lazy_bos = device->has_sparse;
++   get_kgsl_prop(kgsl_fd, KGSL_PROP_GPU_VA64_SIZE, &device->va_size,
++                 sizeof(device->va_size));
++   device->va_start = 0x100000000;
++
++   device->has_preemption = true;
++
++   device->ubwc_config.highest_bank_bit = highest_bank_bit;
++   switch (ubwc_version) {
++   case KGSL_UBWC_1_0:
++      device->ubwc_config.bank_swizzle_levels = 0x7;
++      device->ubwc_config.macrotile_mode = FDL_MACROTILE_4_CHANNEL;
++      break;
++   case KGSL_UBWC_2_0:
++   case KGSL_UBWC_3_0:
++      device->ubwc_config.bank_swizzle_levels = 0x6;
++      device->ubwc_config.macrotile_mode = FDL_MACROTILE_4_CHANNEL;
++      break;
++   case KGSL_UBWC_4_0:
++      device->ubwc_config.bank_swizzle_levels = 0x6;
++      device->ubwc_config.macrotile_mode = FDL_MACROTILE_8_CHANNEL;
++      break;
++   default:
++      mesa_logw("Unknown UBWC version 0x%x", ubwc_version);
++      break;
++   }
++   if (device->dev_id.gpu_id == 663 || device->dev_id.gpu_id == 680)
++      device->ubwc_config.macrotile_mode = FDL_MACROTILE_8_CHANNEL;
++   if (device->dev_id.gpu_id == 663)
++      device->ubwc_config.bank_swizzle_levels = 0x4;
++
++   device->timeline_type = vk_sync_timeline_get_type(&vk_kgsl_sync_type);
++   device->sync_types[0] = &vk_kgsl_sync_type;
++   device->sync_types[1] = &device->timeline_type.sync;
++   device->sync_types[2] = NULL;
++
++   device->heap.size = tu_get_system_heap_size(device);
++   device->heap.used = 0u;
++   device->heap.flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
 +
 +   /* Set the correct kernel interface table for kgsl-drm */
 +   instance->knl = &kgsl_drm_knl_funcs;

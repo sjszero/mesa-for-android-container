@@ -112,7 +112,7 @@ new file mode 100644
 index 00000000000..42c38427cec
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1985 @@
+@@ -0,0 +1,1986 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -1835,6 +1835,7 @@ index 00000000000..42c38427cec
 +                     struct tu_physical_device **out,
 +                     const char *path)
 +{
++   VkResult result
 +   int kgsl_fd;
 +
 +   kgsl_fd = open(path, O_RDWR | O_CLOEXEC);

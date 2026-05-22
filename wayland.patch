@@ -112,7 +112,7 @@ new file mode 100644
 index 00000000000..42c38427cec
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1932 @@
+@@ -0,0 +1,1907 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -1784,27 +1784,6 @@ index 00000000000..42c38427cec
 +   return VK_SUCCESS;
 +}
 +
-+static VkResult
-+kgsl_bo_alloc_lazy(struct tu_device *dev, struct tu_bo *bo)
-+{
-+   /* KGSL does not support lazy allocation */
-+   return vk_error(dev, VK_ERROR_FEATURE_NOT_PRESENT);
-+}
-+
-+static void
-+kgsl_bo_set_metadata(struct tu_device *dev, struct tu_bo *bo,
-+                     void *metadata, uint32_t metadata_size)
-+{
-+   /* Not supported on kgsl; ignore silently */
-+}
-+
-+static int
-+kgsl_bo_get_metadata(struct tu_device *dev, struct tu_bo *bo,
-+                     void *metadata, uint32_t metadata_size)
-+{
-+   return -1;  /* not supported */
-+}
-+
 +static const struct tu_knl kgsl_drm_knl_funcs = {
 +      .name = "kgsl_drm",
 +
@@ -1829,10 +1808,6 @@ index 00000000000..42c38427cec
 +      .queue_wait_fence = kgsl_queue_wait_fence,
 +      .sparse_vma_init = kgsl_sparse_vma_init,
 +      .sparse_vma_finish = kgsl_sparse_vma_finish,
-+      .bo_alloc_lazy = kgsl_bo_alloc_lazy,
-+      .bo_set_metadata = kgsl_bo_set_metadata,
-+      .bo_get_metadata = kgsl_bo_get_metadata,
-+      .device_entrypoints = &tu_device_entrypoints,
 +};
 +
 +static bool
@@ -2069,7 +2044,28 @@ index 0426eba53d3..623b21f8de8 100644
     bool implicit_sync : 1;
     bool never_unmap : 1;
     bool cached_non_coherent : 1;
+From 5cc08dd78b5c613811955fc3e077b46a64c248a2 Mon Sep 17 00:00:00 2001
+From: Osilvfe <3072756864@qq.com>
+Date: Wed, 24 Dec 2025 19:11:06 +0800
+Subject: [PATCH] tu:fix TU_MAX_QUEUE_FAMILIES overflow
 
+---
+ src/freedreno/vulkan/tu_device.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/freedreno/vulkan/tu_device.h b/src/freedreno/vulkan/tu_device.h
+index 08c102ae145..69c6845a230 100644
+--- a/src/freedreno/vulkan/tu_device.h
++++ b/src/freedreno/vulkan/tu_device.h
+@@ -32,7 +32,7 @@
+ /* queue types */
+ #define TU_QUEUE_GENERAL 0
+ 
+-#define TU_MAX_QUEUE_FAMILIES 2
++#define TU_MAX_QUEUE_FAMILIES 4
+ 
+ #define TU_BORDER_COLOR_COUNT 4096
+ 
 From 7f93c597e39fe9457eb35925193334527f828486 Mon Sep 17 00:00:00 2001
 From: lfdevs <109842948+lfdevs@users.noreply.github.com>
 Date: Sat, 25 Apr 2026 14:48:31 +0800
@@ -2122,14 +2118,14 @@ forcing the buffer blit swapchain path which fails on Adreno 725.
 Add an early return for KGSL devices so the native image path is used
 instead.
 ---
- src/freedreno/vulkan/tu_wsi.cc | 8 ++++++++
- 1 file changed, 8 insertions(+)
+ src/freedreno/vulkan/tu_wsi.cc | 9 +++++++++
+ 1 file changed, 9 insertions(+)
 
 diff --git a/src/freedreno/vulkan/tu_wsi.cc b/src/freedreno/vulkan/tu_wsi.cc
 index 12b694b4aae..b2b37643450 100644
 --- a/src/freedreno/vulkan/tu_wsi.cc
 +++ b/src/freedreno/vulkan/tu_wsi.cc
-@@ -27,6 +27,14 @@ tu_wsi_can_present_on_device(VkPhysicalDevice physicalDevice, int fd)
+@@ -27,6 +27,15 @@ tu_wsi_can_present_on_device(VkPhysicalDevice physicalDevice, int fd)
  {
  #ifdef HAVE_LIBDRM
     VK_FROM_HANDLE(tu_physical_device, pdevice, physicalDevice);
@@ -2138,8 +2134,9 @@ index 12b694b4aae..b2b37643450 100644
 +    * fail on a KGSL fd.  In the Termux/X11 environment the DRI3 fd from
 +    * the X server is for the same physical GPU, so treat it as compatible.
 +    */
-+   if (strcmp(pdevice->instance->knl->name, "kgsl") == 0)
-+      return true;
++if (strcmp(pdevice->instance->knl->name, "kgsl") == 0 ||
++    strcmp(pdevice->instance->knl->name, "kgsl_drm") == 0)
++    return true;
 +
     return wsi_common_drm_devices_equal(fd, pdevice->local_fd);
  #else
@@ -2206,3 +2203,150 @@ index 42c38427cec..abcdef123456 100644
     };
 -- 
 2.34.1
+
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -1824,30 +1824,92 @@ VkResult
+ tu_knl_kgsl_drm_load(struct tu_instance *instance,
+                      struct _drmVersion *version,
+                      struct tu_physical_device **out,
+                      const char *path)
+ {
+-      int kgsl_fd;
++   int kgsl_fd;
+ 
+-      kgsl_fd = open(path, O_RDWR | O_CLOEXEC);
+-      if (kgsl_fd < 0) {
+-      if (errno == ENOENT)
+-         return VK_ERROR_INCOMPATIBLE_DRIVER;
++   kgsl_fd = open(path, O_RDWR | O_CLOEXEC);
++   if (kgsl_fd < 0) {
++      if (errno == ENOENT)
++         return VK_ERROR_INCOMPATIBLE_DRIVER;
+ 
+       return vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                        "failed to open device %s", path);
+-      }
+-
+-   VkResult result = tu_knl_kgsl_load(instance, kgsl_fd, out);
+-   if (result != VK_SUCCESS) {
+-      close(kgsl_fd);
+-      return result;
+-   }
+-   struct tu_physical_device * device = *out;
+-   device->msm_major_version = version->version_major;
+-   device->msm_minor_version = version->version_minor;
+-
+-   return result;
++   }
++
++   struct tu_physical_device *device = (struct tu_physical_device *)
++      vk_zalloc(&instance->vk.alloc, sizeof(*device), 8,
++                VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
++   if (!device) {
++      close(kgsl_fd);
++      return vk_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
++   }
++
++   /* Open dma-heap or ION device for external memory */
++   static const char dma_heap_path[] = "/dev/dma_heap/system";
++   static const char ion_path[] = "/dev/ion";
++   int dma_fd = -1;
++
++   dma_fd = open(dma_heap_path, O_RDONLY);
++   if (dma_fd >= 0) {
++      device->kgsl_dma_type = TU_KGSL_DMA_TYPE_DMAHEAP;
++   } else {
++      dma_fd = open(ion_path, O_RDONLY);
++      if (dma_fd >= 0) {
++         struct ion_handle_data free = { .handle = 0 };
++         if (safe_ioctl(dma_fd, ION_IOC_FREE, &free) >= 0 || errno != ENOTTY)
++            device->kgsl_dma_type = TU_KGSL_DMA_TYPE_ION_LEGACY;
++         else
++            device->kgsl_dma_type = TU_KGSL_DMA_TYPE_ION;
++      } else {
++         mesa_logw("Unable to open neither %s nor %s, VK_KHR_external_memory_fd unavailable: %s",
++                   dma_heap_path, ion_path, strerror(errno));
++      }
++   }
++
++   struct kgsl_devinfo info;
++   if (get_kgsl_prop(kgsl_fd, KGSL_PROP_DEVICE_INFO, &info, sizeof(info)))
++      goto fail;
++
++   uint64_t gmem_iova;
++   if (get_kgsl_prop(kgsl_fd, KGSL_PROP_UCHE_GMEM_VADDR, &gmem_iova, sizeof(gmem_iova)))
++      goto fail;
++
++   uint32_t highest_bank_bit;
++   if (get_kgsl_prop(kgsl_fd, KGSL_PROP_HIGHEST_BANK_BIT, &highest_bank_bit,
++                     sizeof(highest_bank_bit)))
++      goto fail;
++
++   uint32_t ubwc_version;
++   if (get_kgsl_prop(kgsl_fd, KGSL_PROP_UBWC_MODE, &ubwc_version,
++                     sizeof(ubwc_version)))
++      goto fail;
++
++   if (get_kgsl_prop(kgsl_fd, KGSL_PROP_UCHE_TRAP_BASE, &device->uche_trap_base,
++                     sizeof(device->uche_trap_base))) {
++      device->uche_trap_base = 0x1fffffffff000ull;
++   }
++
++   device->instance = instance;
++   device->master_fd = -1;
++   device->local_fd = kgsl_fd;
++   device->kgsl_dma_fd = dma_fd;
++   device->dev_id.gpu_id = ((info.chip_id >> 24) & 0xff) * 100 +
++                           ((info.chip_id >> 16) & 0xff) * 10 +
++                           ((info.chip_id >>  8) & 0xff);
++   device->dev_id.chip_id = info.chip_id;
++   device->gmem_size = debug_get_num_option("TU_GMEM", info.gmem_sizebytes);
++   device->gmem_base = gmem_iova;
++
++   /* Set the correct kernel interface table for kgsl-drm */
++   instance->knl = &kgsl_drm_knl_funcs;
++
++   VkResult result = tu_physical_device_init(device, instance);
++   if (result != VK_SUCCESS)
++      goto fail;
++
++   *out = device;
++   return VK_SUCCESS;
++
++fail:
++   vk_free(&instance->vk.alloc, device);
++   close(kgsl_fd);
++   if (dma_fd >= 0)
++      close(dma_fd);
++   return result;
+ }
+ 
+ --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -1517,8 +1517,6 @@ static void
+ kgsl_device_finish(struct tu_device *dev)
+ {
+-   /* No-op */
+ }
+ 
+ static int
+ kgsl_device_get_gpu_timestamp(struct tu_device *dev, uint64_t *ts)
+ {
+-   UNREACHABLE("");
+-   return 0;
++   /* KGSL doesn't provide a direct GPU timestamp query.
++    * Return 0 as a placeholder; u_trace will fall back to CPU timestamps.
++    */
++   *ts = 0;
++   return 0;
+ }
+ 
+ static int
+ kgsl_device_get_suspend_count(struct tu_device *dev, uint64_t *suspend_count)
+ {
+-   /* kgsl doesn't have a way to get it */
++   /* kgsl doesn't have a way to get suspend count, so report 0. */
+    *suspend_count = 0;
+    return 0;
+ }

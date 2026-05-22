@@ -2334,3 +2334,100 @@ index 42c38427cec..abcdef123456 100644
     };
 -- 
 2.34.1
+From: Fix <fix@example.com>
+Date: Fri, 22 May 2026 12:05:00 +0800
+Subject: [PATCH] tu/kgsl-drm: validate kgsl_dma_fd before use
+
+Add explicit checks for kgsl_dma_fd being >= 0 in all external
+memory allocation functions. Also ensure the fd is properly closed
+on failure paths.
+
+---
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 24 ++++++++++++++++++++----
+ 1 file changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+index c5a7b9d3e1f..e8f2a1b4c9d 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -92,6 +92,9 @@ bo_init_new_dmaheap(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
+       .fd_flags = O_RDWR | O_CLOEXEC,
+    };
+ 
++   if (dev->physical_device->kgsl_dma_fd < 0)
++      return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY, "dma-heap device not opened");
++
+    int ret;
+    ret = safe_ioctl(dev->physical_device->kgsl_dma_fd, DMA_HEAP_IOCTL_ALLOC,
+                     &alloc);
+@@ -113,6 +116,9 @@ bo_init_new_ion(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
+       .fd = -1,
+    };
+ 
++   if (dev->physical_device->kgsl_dma_fd < 0)
++      return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY, "ION device not opened");
++
+    int ret;
+    ret = safe_ioctl(dev->physical_device->kgsl_dma_fd, ION_IOC_NEW_ALLOC, &alloc);
+    if (ret) {
+@@ -133,6 +139,9 @@ bo_init_new_ion_legacy(struct tu_device *dev, struct tu_bo **out_bo, uint64_t si
+       .handle = -1,
+    };
+ 
++   if (dev->physical_device->kgsl_dma_fd < 0)
++      return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY, "legacy ION device not opened");
++
+    int ret;
+    ret = safe_ioctl(dev->physical_device->kgsl_dma_fd, ION_IOC_ALLOC, &alloc);
+    if (ret) {
+@@ -1795,6 +1804,7 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
+    /* Open dma-heap or ION device for external memory */
+    static const char dma_heap_path[] = "/dev/dma_heap/system";
+    static const char ion_path[] = "/dev/ion";
++   static const char dmabuf_heap_path[] = "/dev/dma_heap/system";
+    int dma_fd = -1;
+ 
+    dma_fd = open(dma_heap_path, O_RDONLY);
+@@ -1808,11 +1818,16 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
+          else
+             device->kgsl_dma_type = TU_KGSL_DMA_TYPE_ION;
+       } else {
+-         mesa_logw("Unable to open neither %s nor %s, VK_KHR_external_memory_fd unavailable: %s",
+-                   dma_heap_path, ion_path, strerror(errno));
++         mesa_logw("Unable to open neither %s nor %s, VK_KHR_external_memory_fd will be unavailable: %s",
++                   dma_heap_path, ion_path, strerror(errno));
++         dma_fd = -1;
+       }
+    }
+ 
++   /* Even if no dma-heap or ion is available, we can still proceed
++    * without external memory support.
++    */
++   device->kgsl_dma_fd = dma_fd;
+    struct kgsl_devinfo info;
+    if (get_kgsl_prop(kgsl_fd, KGSL_PROP_DEVICE_INFO, &info, sizeof(info)))
+       goto fail;
+@@ -1834,7 +1849,6 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
+    device->instance = instance;
+    device->master_fd = -1;
+    device->local_fd = kgsl_fd;
+-   device->kgsl_dma_fd = dma_fd;
+    device->dev_id.gpu_id = ((info.chip_id >> 24) & 0xff) * 100 +
+                            ((info.chip_id >> 16) & 0xff) * 10 +
+                            ((info.chip_id >>  8) & 0xff);
+@@ -1898,9 +1912,11 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
+ fail:
+    vk_free(&instance->vk.alloc, device);
+    close(kgsl_fd);
+-   if (dma_fd >= 0)
++   if (dma_fd >= 0) {
+       close(dma_fd);
++   }
+    return result;
+ }
++
+ VkResult
+ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
+                  struct tu_physical_device **out){
+-- 
+2.34.1

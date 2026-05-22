@@ -112,7 +112,7 @@ new file mode 100644
 index 00000000000..42c38427cec
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1979 @@
+@@ -0,0 +1,1985 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -855,6 +855,9 @@ index 00000000000..42c38427cec
 +      }
 +   }
 +}
++
++static VkResult
++kgsl_queue_wait_fence(struct tu_queue *queue, uint32_t fence, uint64_t timeout_ns);
 +
 +VkResult
 +kgsl_queue_wait_fence(struct tu_queue *queue, uint32_t fence,
@@ -1910,9 +1913,12 @@ index 00000000000..42c38427cec
 +   /* Set the correct kernel interface table for kgsl-drm */
 +   instance->knl = &kgsl_drm_knl_funcs;
 +
-+   VkResult result = tu_physical_device_init(device, instance);
++   result = tu_physical_device_init(device, instance);
 +   if (result != VK_SUCCESS)
 +      goto fail;
++
++   device->msm_major_version = version->version_major;
++   device->msm_minor_version = version->version_minor;
 +
 +   *out = device;
 +   return VK_SUCCESS;

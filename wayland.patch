@@ -2473,11 +2473,11 @@ the regular kgsl_gpumem_alloc_id path instead. This allows the
 driver to work on systems without ION or dma-heap devices.
 
 ---
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 20 +++++++++++++++++++-
- 1 file changed, 19 insertions(+), 1 deletion(-)
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 23 +++++++++++++++++++----
+ 1 file changed, 19 insertions(+), 4 deletions(-)
 
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index e8f2a1b4c9d..d9c3e5f6a7b 100644
+index e8f2a1b4c9d..f9e3c8d2a5b 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 @@ -237,6 +237,8 @@ kgsl_bo_init(struct tu_device *dev,
@@ -2489,22 +2489,20 @@ index e8f2a1b4c9d..d9c3e5f6a7b 100644
        /* The Vulkan spec doesn't forbid allocating exportable memory with a
         * fixed address, only imported memory, but on kgsl we can't sensibly
         * implement it so just always reject it.
-@@ -245,13 +247,29 @@ kgsl_bo_init(struct tu_device *dev,
+@@ -245,13 +247,26 @@ kgsl_bo_init(struct tu_device *dev,
                            "cannot allocate an exportable BO with a fixed address");
        }
  
+-      switch(dev->physical_device->kgsl_dma_type) {
 +      /* If no dma-heap or ION device is available, fall back to normal
-+       * allocation, clearing the SHAREABLE flag. This will still allow the
-+       * BO to be used but cannot be exported. Most applications don't need
-+       * exportable memory.
++       * allocation, clearing the SHAREABLE flag.
 +       */
 +      if (dma_fd < 0) {
 +         mesa_logw("kgsl_dma_fd invalid, disabling TU_BO_ALLOC_SHAREABLE for this allocation");
-+         flags &= ~TU_BO_ALLOC_SHAREABLE;
 +         goto normal_alloc;
 +      }
 +
-       switch(dev->physical_device->kgsl_dma_type) {
++      switch (dev->physical_device->kgsl_dma_type) {
        case TU_KGSL_DMA_TYPE_DMAHEAP:
           return bo_init_new_dmaheap(dev, out_bo, size, flags);
        case TU_KGSL_DMA_TYPE_ION:
@@ -2514,7 +2512,6 @@ index e8f2a1b4c9d..d9c3e5f6a7b 100644
 +      default:
 +         mesa_logw("Unknown kgsl_dma_type %d, falling back to normal alloc",
 +                   dev->physical_device->kgsl_dma_type);
-+         flags &= ~TU_BO_ALLOC_SHAREABLE;
 +         goto normal_alloc;
        }
     }
@@ -2523,5 +2520,14 @@ index e8f2a1b4c9d..d9c3e5f6a7b 100644
     struct kgsl_gpumem_alloc_id req = {
        .size = size,
     };
+@@ -284,7 +299,7 @@ kgsl_bo_init(struct tu_device *dev,
+    VkResult result = VK_SUCCESS;
+ 
+    if (lazy_vma) {
+-      result = kgsl_sparse_vma_map(dev, lazy_vma, bo, 0);
++      result = kgsl_sparse_vma_map(dev, lazy_vma, bo, 0);
+    } else if (flags & TU_BO_ALLOC_REPLAYABLE) {
+       result = kgsl_bo_user_map(dev, bo, client_iova);
+    }
 -- 
 2.34.1

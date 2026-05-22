@@ -1835,7 +1835,7 @@ index 00000000000..42c38427cec
 +                     struct tu_physical_device **out,
 +                     const char *path)
 +{
-+   VkResult result
++   VkResult result;
 +   int kgsl_fd;
 +
 +   kgsl_fd = open(path, O_RDWR | O_CLOEXEC);

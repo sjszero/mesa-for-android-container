@@ -2213,3 +2213,66 @@ index 0426eba53d3..a3f5c9e2b1d 100644
     bool never_unmap : 1;
 -- 
 2.34.1
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fix <fix@example.com>
+Date: Fri, 22 May 2026 15:00:00 +0800
+Subject: [PATCH] kgsl-drm: additional fixes for Wayland stability
+
+- Recognize kgsl_drm in tu_wsi_can_present_on_device
+- Do not close kgsl_dma_fd in kgsl_device_finish (owned by physical device)
+- Add NULL check in kgsl_sparse_vma_finish
+
+Signed-off-by: fix <fix@example.com>
+---
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 9 ++++++---
+ src/freedreno/vulkan/tu_wsi.cc          | 4 +++-
+ 2 files changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+index 42c38427cec..f6e5d4c3b2a 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -504,8 +504,12 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
+                        struct tu_sparse_vma *vma)
+ {
+    struct kgsl_gpuobj_free req = {
+-      .id = vma->kgsl.virtual_bo->gem_handle,
++      .id = vma->kgsl.virtual_bo ? vma->kgsl.virtual_bo->gem_handle : 0,
+    };
+ 
++   /* If virtual_bo is already NULL, nothing to do */
++   if (req.id == 0)
++      return;
++
+    /* Do NOT memset the entire bo entry! */
+    if (vma->kgsl.virtual_bo) {
+       vma->kgsl.virtual_bo->gem_handle = 0;
+@@ -1726,10 +1730,9 @@ kgsl_device_finish(struct tu_device *dev)
+ {
+    tu_bo_suballocator_finish(&dev->kgsl_profiling_suballoc);
+    mtx_destroy(&dev->kgsl_profiling_mutex);
+-
+-   if (dev->physical_device->kgsl_dma_fd >= 0)
+-      close(dev->physical_device->kgsl_dma_fd);
+ }
++
++/* Note: kgsl_dma_fd is closed in tu_physical_device_finish, not here */
+ 
+ static int
+ kgsl_device_get_gpu_timestamp(struct tu_device *dev, uint64_t *ts)
+diff --git a/src/freedreno/vulkan/tu_wsi.cc b/src/freedreno/vulkan/tu_wsi.cc
+index b2b37643450..c3d4e5f6a7b 100644
+--- a/src/freedreno/vulkan/tu_wsi.cc
++++ b/src/freedreno/vulkan/tu_wsi.cc
+@@ -32,7 +32,9 @@ tu_wsi_can_present_on_device(VkPhysicalDevice physicalDevice, int fd)
+     * fail on a KGSL fd.  In the Termux/X11 environment the DRI3 fd from
+     * the X server is for the same physical GPU, so treat it as compatible.
+     */
+-   if (strcmp(pdevice->instance->knl->name, "kgsl") == 0)
++   if (strcmp(pdevice->instance->knl->name, "kgsl") == 0 ||
++       strcmp(pdevice->instance->knl->name, "kgsl_drm") == 0)
+       return true;
+ 
+    return wsi_common_drm_devices_equal(fd, pdevice->local_fd);
+-- 
+2.34.1

@@ -112,7 +112,7 @@ new file mode 100644
 index 00000000000..42c38427cec
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,2038 @@
+@@ -0,0 +1,1907 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -855,9 +855,6 @@ index 00000000000..42c38427cec
 +      }
 +   }
 +}
-+
-+static VkResult
-+kgsl_queue_wait_fence(struct tu_queue *queue, uint32_t fence, uint64_t timeout_ns);
 +
 +VkResult
 +kgsl_queue_wait_fence(struct tu_queue *queue, uint32_t fence,
@@ -1744,22 +1741,20 @@ index 00000000000..42c38427cec
 +static void
 +kgsl_device_finish(struct tu_device *dev)
 +{
++   /* No-op */
 +}
 +
 +static int
 +kgsl_device_get_gpu_timestamp(struct tu_device *dev, uint64_t *ts)
 +{
-+   /* KGSL doesn't provide a direct GPU timestamp query.
-+    * Return 0 as a placeholder; u_trace will fall back to CPU timestamps.
-+    */
-+   *ts = 0;
++   UNREACHABLE("");
 +   return 0;
 +}
 +
 +static int
 +kgsl_device_get_suspend_count(struct tu_device *dev, uint64_t *suspend_count)
 +{
-+   /* kgsl doesn't have a way to get suspend count, so report 0. */
++   /* kgsl doesn't have a way to get it */
 +   *suspend_count = 0;
 +   return 0;
 +}
@@ -1835,152 +1830,26 @@ index 00000000000..42c38427cec
 +                     struct tu_physical_device **out,
 +                     const char *path)
 +{
-+   VkResult result;
-+   int kgsl_fd;
++      int kgsl_fd;
 +
-+   kgsl_fd = open(path, O_RDWR | O_CLOEXEC);
-+   if (kgsl_fd < 0) {
++      kgsl_fd = open(path, O_RDWR | O_CLOEXEC);
++      if (kgsl_fd < 0) {
 +      if (errno == ENOENT)
 +         return VK_ERROR_INCOMPATIBLE_DRIVER;
 +
 +      return vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
 +                       "failed to open device %s", path);
-+   }
-+
-+   struct tu_physical_device *device = (struct tu_physical_device *)
-+      vk_zalloc(&instance->vk.alloc, sizeof(*device), 8,
-+                VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
-+   if (!device) {
-+      close(kgsl_fd);
-+      return vk_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
-+   }
-+
-+   /* Open dma-heap or ION device for external memory */
-+   static const char dma_heap_path[] = "/dev/dma_heap/system";
-+   static const char ion_path[] = "/dev/ion";
-+   int dma_fd = -1;
-+
-+   dma_fd = open(dma_heap_path, O_RDONLY);
-+   if (dma_fd >= 0) {
-+      device->kgsl_dma_type = TU_KGSL_DMA_TYPE_DMAHEAP;
-+   } else {
-+      dma_fd = open(ion_path, O_RDONLY);
-+      if (dma_fd >= 0) {
-+         struct ion_handle_data free = { .handle = 0 };
-+         if (safe_ioctl(dma_fd, ION_IOC_FREE, &free) >= 0 || errno != ENOTTY)
-+            device->kgsl_dma_type = TU_KGSL_DMA_TYPE_ION_LEGACY;
-+         else
-+            device->kgsl_dma_type = TU_KGSL_DMA_TYPE_ION;
-+      } else {
-+         mesa_logw("Unable to open neither %s nor %s, VK_KHR_external_memory_fd unavailable: %s",
-+                   dma_heap_path, ion_path, strerror(errno));
 +      }
++
++   VkResult result = tu_knl_kgsl_load(instance, kgsl_fd, out);
++   if (result != VK_SUCCESS) {
++      close(kgsl_fd);
++      return result;
 +   }
-+
-+   struct kgsl_devinfo info;
-+   if (get_kgsl_prop(kgsl_fd, KGSL_PROP_DEVICE_INFO, &info, sizeof(info)))
-+      goto fail;
-+
-+   uint64_t gmem_iova;
-+   if (get_kgsl_prop(kgsl_fd, KGSL_PROP_UCHE_GMEM_VADDR, &gmem_iova, sizeof(gmem_iova)))
-+      goto fail;
-+
-+   uint32_t highest_bank_bit;
-+   if (get_kgsl_prop(kgsl_fd, KGSL_PROP_HIGHEST_BANK_BIT, &highest_bank_bit,
-+                     sizeof(highest_bank_bit)))
-+      goto fail;
-+
-+   uint32_t ubwc_version;
-+   if (get_kgsl_prop(kgsl_fd, KGSL_PROP_UBWC_MODE, &ubwc_version,
-+                     sizeof(ubwc_version)))
-+      goto fail;
-+
-+   if (get_kgsl_prop(kgsl_fd, KGSL_PROP_UCHE_TRAP_BASE, &device->uche_trap_base,
-+                     sizeof(device->uche_trap_base))) {
-+      device->uche_trap_base = 0x1fffffffff000ull;
-+   }
-+
-+   device->instance = instance;
-+   device->master_fd = -1;
-+   device->local_fd = kgsl_fd;
-+   device->kgsl_dma_fd = dma_fd;
-+   device->dev_id.gpu_id = ((info.chip_id >> 24) & 0xff) * 100 +
-+                           ((info.chip_id >> 16) & 0xff) * 10 +
-+                           ((info.chip_id >>  8) & 0xff);
-+   device->dev_id.chip_id = info.chip_id;
-+   device->gmem_size = debug_get_num_option("TU_GMEM", info.gmem_sizebytes);
-+   device->gmem_base = gmem_iova;
-+
-+   device->has_raytracing = tu_kgsl_get_raytracing(kgsl_fd);
-+   device->submitqueue_priority_count = 1;
-+
-+   device->has_set_iova = kgsl_is_memory_type_supported(
-+      kgsl_fd, KGSL_MEMFLAGS_USE_CPU_MAP);
-+
-+   device->has_cached_coherent_memory = kgsl_is_memory_type_supported(
-+      kgsl_fd, KGSL_MEMFLAGS_IOCOHERENT |
-+             (KGSL_CACHEMODE_WRITEBACK << KGSL_CACHEMODE_SHIFT));
-+
-+   device->has_sparse = kgsl_is_virtual_bo_supported(kgsl_fd);
-+   device->has_sparse_prr = device->has_sparse;
-+   device->has_lazy_bos = device->has_sparse;
-+   get_kgsl_prop(kgsl_fd, KGSL_PROP_GPU_VA64_SIZE, &device->va_size,
-+                 sizeof(device->va_size));
-+   device->va_start = 0x100000000;
-+
-+   device->has_preemption = true;
-+
-+   device->ubwc_config.highest_bank_bit = highest_bank_bit;
-+   switch (ubwc_version) {
-+   case KGSL_UBWC_1_0:
-+      device->ubwc_config.bank_swizzle_levels = 0x7;
-+      device->ubwc_config.macrotile_mode = FDL_MACROTILE_4_CHANNEL;
-+      break;
-+   case KGSL_UBWC_2_0:
-+   case KGSL_UBWC_3_0:
-+      device->ubwc_config.bank_swizzle_levels = 0x6;
-+      device->ubwc_config.macrotile_mode = FDL_MACROTILE_4_CHANNEL;
-+      break;
-+   case KGSL_UBWC_4_0:
-+      device->ubwc_config.bank_swizzle_levels = 0x6;
-+      device->ubwc_config.macrotile_mode = FDL_MACROTILE_8_CHANNEL;
-+      break;
-+   default:
-+      mesa_logw("Unknown UBWC version 0x%x", ubwc_version);
-+      break;
-+   }
-+   if (device->dev_id.gpu_id == 663 || device->dev_id.gpu_id == 680)
-+      device->ubwc_config.macrotile_mode = FDL_MACROTILE_8_CHANNEL;
-+   if (device->dev_id.gpu_id == 663)
-+      device->ubwc_config.bank_swizzle_levels = 0x4;
-+
-+   device->timeline_type = vk_sync_timeline_get_type(&vk_kgsl_sync_type);
-+   device->sync_types[0] = &vk_kgsl_sync_type;
-+   device->sync_types[1] = &device->timeline_type.sync;
-+   device->sync_types[2] = NULL;
-+
-+   device->heap.size = tu_get_system_heap_size(device);
-+   device->heap.used = 0u;
-+   device->heap.flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
-+
-+   /* Set the correct kernel interface table for kgsl-drm */
-+   instance->knl = &kgsl_drm_knl_funcs;
-+
-+   result = tu_physical_device_init(device, instance);
-+   if (result != VK_SUCCESS)
-+      goto fail;
-+
++   struct tu_physical_device * device = *out;
 +   device->msm_major_version = version->version_major;
 +   device->msm_minor_version = version->version_minor;
 +
-+   *out = device;
-+   return VK_SUCCESS;
-+
-+fail:
-+   vk_free(&instance->vk.alloc, device);
-+   close(kgsl_fd);
-+   if (dma_fd >= 0)
-+      close(dma_fd);
 +   return result;
 +}
 +VkResult
@@ -2249,14 +2118,14 @@ forcing the buffer blit swapchain path which fails on Adreno 725.
 Add an early return for KGSL devices so the native image path is used
 instead.
 ---
- src/freedreno/vulkan/tu_wsi.cc | 9 +++++++++
- 1 file changed, 9 insertions(+)
+ src/freedreno/vulkan/tu_wsi.cc | 8 ++++++++
+ 1 file changed, 8 insertions(+)
 
 diff --git a/src/freedreno/vulkan/tu_wsi.cc b/src/freedreno/vulkan/tu_wsi.cc
 index 12b694b4aae..b2b37643450 100644
 --- a/src/freedreno/vulkan/tu_wsi.cc
 +++ b/src/freedreno/vulkan/tu_wsi.cc
-@@ -27,6 +27,15 @@ tu_wsi_can_present_on_device(VkPhysicalDevice physicalDevice, int fd)
+@@ -27,6 +27,14 @@ tu_wsi_can_present_on_device(VkPhysicalDevice physicalDevice, int fd)
  {
  #ifdef HAVE_LIBDRM
     VK_FROM_HANDLE(tu_physical_device, pdevice, physicalDevice);
@@ -2265,9 +2134,8 @@ index 12b694b4aae..b2b37643450 100644
 +    * fail on a KGSL fd.  In the Termux/X11 environment the DRI3 fd from
 +    * the X server is for the same physical GPU, so treat it as compatible.
 +    */
-+if (strcmp(pdevice->instance->knl->name, "kgsl") == 0 ||
-+    strcmp(pdevice->instance->knl->name, "kgsl_drm") == 0)
-+    return true;
++   if (strcmp(pdevice->instance->knl->name, "kgsl") == 0)
++      return true;
 +
     return wsi_common_drm_devices_equal(fd, pdevice->local_fd);
  #else
@@ -2332,236 +2200,5 @@ index 42c38427cec..abcdef123456 100644
     struct kgsl_gpuobj_import_dma_buf import_dmabuf = {
        .fd = fd,
     };
--- 
-2.34.1
-From: Fix <fix@example.com>
-Date: Fri, 22 May 2026 12:00:00 +0800
-Subject: [PATCH] tu/kgsl-drm: fix sparse vma finish memory corruption
-
-Do not memset the virtual bo after freeing, as the bo may still be
-referenced elsewhere. Instead call tu_bo_finish to properly release
-the bo and update the sparse array.
-
----
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 7 +++++--
- 1 file changed, 5 insertions(+), 2 deletions(-)
-
-diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index 42c38427cec..c5a7b9d3e1f 100644
---- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-+++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -505,8 +505,11 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
-       .id = vma->kgsl.virtual_bo->gem_handle
-    };
- 
--   /* Tell sparse array that entry is free */
--   memset(vma->kgsl.virtual_bo, 0, sizeof(*vma->kgsl.virtual_bo));
-+   /* Release the virtual bo, which will also clear the sparse array entry
-+    * and free the underlying kernel object.
-+    */
-+   tu_bo_finish(dev, vma->kgsl.virtual_bo);
-+   vma->kgsl.virtual_bo = NULL;
- 
-    safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
- }
--- 
-2.34.1
-From: Fix <fix@example.com>
-Date: Fri, 22 May 2026 12:05:00 +0800
-Subject: [PATCH] tu/kgsl-drm: validate kgsl_dma_fd before use
-
-Add explicit checks for kgsl_dma_fd being >= 0 in all external
-memory allocation functions. Also ensure the fd is properly closed
-on failure paths.
-
----
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 24 ++++++++++++++++++++----
- 1 file changed, 20 insertions(+), 4 deletions(-)
-
-diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index c5a7b9d3e1f..e8f2a1b4c9d 100644
---- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-+++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -92,6 +92,9 @@ bo_init_new_dmaheap(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
-       .fd_flags = O_RDWR | O_CLOEXEC,
-    };
- 
-+   if (dev->physical_device->kgsl_dma_fd < 0)
-+      return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY, "dma-heap device not opened");
-+
-    int ret;
-    ret = safe_ioctl(dev->physical_device->kgsl_dma_fd, DMA_HEAP_IOCTL_ALLOC,
-                     &alloc);
-@@ -113,6 +116,9 @@ bo_init_new_ion(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
-       .fd = -1,
-    };
- 
-+   if (dev->physical_device->kgsl_dma_fd < 0)
-+      return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY, "ION device not opened");
-+
-    int ret;
-    ret = safe_ioctl(dev->physical_device->kgsl_dma_fd, ION_IOC_NEW_ALLOC, &alloc);
-    if (ret) {
-@@ -133,6 +139,9 @@ bo_init_new_ion_legacy(struct tu_device *dev, struct tu_bo **out_bo, uint64_t si
-       .handle = -1,
-    };
- 
-+   if (dev->physical_device->kgsl_dma_fd < 0)
-+      return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY, "legacy ION device not opened");
-+
-    int ret;
-    ret = safe_ioctl(dev->physical_device->kgsl_dma_fd, ION_IOC_ALLOC, &alloc);
-    if (ret) {
-@@ -1795,6 +1804,7 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
-    /* Open dma-heap or ION device for external memory */
-    static const char dma_heap_path[] = "/dev/dma_heap/system";
-    static const char ion_path[] = "/dev/ion";
-+   static const char dmabuf_heap_path[] = "/dev/dma_heap/system";
-    int dma_fd = -1;
- 
-    dma_fd = open(dma_heap_path, O_RDONLY);
-@@ -1808,11 +1818,16 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
-          else
-             device->kgsl_dma_type = TU_KGSL_DMA_TYPE_ION;
-       } else {
--         mesa_logw("Unable to open neither %s nor %s, VK_KHR_external_memory_fd unavailable: %s",
--                   dma_heap_path, ion_path, strerror(errno));
-+         mesa_logw("Unable to open neither %s nor %s, VK_KHR_external_memory_fd will be unavailable: %s",
-+                   dma_heap_path, ion_path, strerror(errno));
-+         dma_fd = -1;
-       }
-    }
- 
-+   /* Even if no dma-heap or ion is available, we can still proceed
-+    * without external memory support.
-+    */
-+   device->kgsl_dma_fd = dma_fd;
-    struct kgsl_devinfo info;
-    if (get_kgsl_prop(kgsl_fd, KGSL_PROP_DEVICE_INFO, &info, sizeof(info)))
-       goto fail;
-@@ -1834,7 +1849,6 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
-    device->instance = instance;
-    device->master_fd = -1;
-    device->local_fd = kgsl_fd;
--   device->kgsl_dma_fd = dma_fd;
-    device->dev_id.gpu_id = ((info.chip_id >> 24) & 0xff) * 100 +
-                            ((info.chip_id >> 16) & 0xff) * 10 +
-                            ((info.chip_id >>  8) & 0xff);
-@@ -1898,9 +1912,11 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
- fail:
-    vk_free(&instance->vk.alloc, device);
-    close(kgsl_fd);
--   if (dma_fd >= 0)
-+   if (dma_fd >= 0) {
-       close(dma_fd);
-+   }
-    return result;
- }
-+
- VkResult
- tu_knl_kgsl_load(struct tu_instance *instance, int fd,
-                  struct tu_physical_device **out){
--- 
-2.34.1
-From: Fix <fix@example.com>
-Date: Sun, 24 May 2026 10:00:00 +0800
-Subject: [PATCH 3/3] tu/kgsl-drm: fallback to non-shareable allocation when dma_fd invalid
-
-If kgsl_dma_fd is -1, external memory allocation is impossible.
-In that case, fall back to the regular kgsl_gpumem_alloc_id path
-by jumping to the normal allocation code. This allows the driver
-to work on systems without ION or dma-heap devices.
-
----
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 22 +++++++++++++++++++---
- 1 file changed, 19 insertions(+), 3 deletions(-)
-
-diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index e8f2a1b4c9d..d3a5f7b8c2e 100644
---- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-+++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -237,6 +237,8 @@ kgsl_bo_init(struct tu_device *dev,
-              const char *name)
- {
-    if (flags & TU_BO_ALLOC_SHAREABLE) {
-+      int dma_fd = dev->physical_device->kgsl_dma_fd;
-+
-       /* The Vulkan spec doesn't forbid allocating exportable memory with a
-        * fixed address, only imported memory, but on kgsl we can't sensibly
-        * implement it so just always reject it.
-@@ -245,16 +247,30 @@ kgsl_bo_init(struct tu_device *dev,
-                           "cannot allocate an exportable BO with a fixed address");
-       }
- 
-+      /* If no dma-heap or ION device is available, fall back to normal
-+       * allocation (non-shareable). The TU_BO_ALLOC_SHAREABLE flag will be
-+       * ignored in the normal path, which is fine.
-+       */
-+      if (dma_fd < 0) {
-+         mesa_logw("kgsl_dma_fd invalid, falling back to non-shareable allocation");
-+         goto normal_alloc;
-+      }
-+
-       switch(dev->physical_device->kgsl_dma_type) {
-       case TU_KGSL_DMA_TYPE_DMAHEAP:
-          return bo_init_new_dmaheap(dev, out_bo, size, flags);
-       case TU_KGSL_DMA_TYPE_ION:
-          return bo_init_new_ion(dev, out_bo, size, flags);
-       case TU_KGSL_DMA_TYPE_ION_LEGACY:
-          return bo_init_new_ion_legacy(dev, out_bo, size, flags);
-+      default:
-+         mesa_logw("Unknown kgsl_dma_type %d, falling back to non-shareable allocation",
-+                   dev->physical_device->kgsl_dma_type);
-+         goto normal_alloc;
-       }
-    }
- 
-+normal_alloc:
-    struct kgsl_gpumem_alloc_id req = {
-       .size = size,
-    };
--- 
-2.34.1
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Osilvfe <3072756864@qq.com>
-Date: Sat, 23 May 2026 16:00:00 +0800
-Subject: [PATCH] tu/kgsl-drm: fix compile error and export safety (v2)
-
----
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 10 ++++++++--
- 1 file changed, 8 insertions(+), 2 deletions(-)
-
-diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index e8f2a1b4c9d..0d4e5f6a7b8 100644
---- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-+++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -245,11 +245,13 @@ kgsl_bo_init(struct tu_device *dev,
-                           "cannot allocate an exportable BO with a fixed address");
-       }
- 
--      /* If no dma-heap or ION device is available, fall back to normal
--       * allocation (non-shareable). The TU_BO_ALLOC_SHAREABLE flag will be
--       * ignored in the normal path, which is fine.
-+      /* If no dma-heap or ION device is available, fall back to normal allocation.
-+       * Clear the SHAREABLE flag so that later export attempts will fail safely.
-        */
-       if (dma_fd < 0) {
-+         flags = (enum tu_bo_alloc_flags)(flags & ~TU_BO_ALLOC_SHAREABLE);
-          mesa_logw("kgsl_dma_fd invalid, falling back to non-shareable allocation");
-          goto normal_alloc;
-       }
-@@ -382,7 +384,11 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
- static int
- kgsl_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo)
- {
--   assert(bo->shared_fd != -1);
-+   if (bo->shared_fd == -1) {
-+      mesa_loge("Attempt to export a non-shareable BO");
-+      return -1;
-+   }
-+
-    return os_dupfd_cloexec(bo->shared_fd);
- }
- 
 -- 
 2.34.1

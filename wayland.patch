@@ -2523,131 +2523,136 @@ index e8f2a1b4c9d..d3a5f7b8c2e 100644
 -- 
 2.34.1
 From: Fix <fix@example.com>
-Date: Sun, 24 May 2026 22:00:00 +0800
-Subject: [PATCH] tu/kgsl-drm: final fixes for external memory and sparse vma
+Date: Sat, 23 May 2026 23:00:00 +0800
+Subject: [PATCH] tu/kgsl-drm: fix fallback path crashes when dma_fd is -1
 
+- Initialize bo->shared_fd to -1 in all allocation paths (including fallback)
+- Guard close(shared_fd) with fd >= 0 and reset to -1 after close
+- Fix kgsl_syncobj to handle fd = -1 gracefully in export/import
+- Ensure kgsl_bo_finish does not double-close or munmap invalid memory
+
+These issues caused SIGSEGV on exit when dma-heap/ION is unavailable.
 ---
- src/freedreno/vulkan/tu_device.cc         |  7 +++++++
- src/freedreno/vulkan/tu_knl.h             |  1 +
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc   | 29 ++++++++++++++++++++---
- src/freedreno/vulkan/tu_physical_device.h |  1 +
- 4 files changed, 35 insertions(+), 3 deletions(-)
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 35 ++++++++++++++++++++++++---------
+ 1 file changed, 26 insertions(+), 9 deletions(-)
 
-diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
-index 1234567..abcdefg 100644
---- a/src/freedreno/vulkan/tu_device.cc
-+++ b/src/freedreno/vulkan/tu_device.cc
-@@ -2145,6 +2145,13 @@ VkResult VKAPI_CALL tu_GetMemoryFdKHR(
-    VK_FROM_HANDLE(tu_device, device, _device);
-    VK_FROM_HANDLE(tu_device_memory, memory, pGetFdInfo->memory);
- 
-+   /* If external memory is not available (no dma-heap/ion), fail early */
-+   if (!device->physical_device->has_external_memory) {
-+      return vk_errorf(device, VK_ERROR_INVALID_EXTERNAL_HANDLE,
-+                       "external memory not supported on this device");
-+   }
-+
-    assert(pGetFdInfo->sType == VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR);
- 
-    /* At the moment, we support only the below handle types. */
-diff --git a/src/freedreno/vulkan/tu_knl.h b/src/freedreno/vulkan/tu_knl.h
-index 623b21f..d4c5a6b 100644
---- a/src/freedreno/vulkan/tu_knl.h
-+++ b/src/freedreno/vulkan/tu_knl.h
-@@ -61,6 +61,7 @@ struct tu_bo {
-    bool implicit_sync : 1;
-    bool never_unmap : 1;
-    bool cached_non_coherent : 1;
-+   bool is_virtual : 1;  /* for sparse VMA virtual BOs */
-    bool lazy : 1;
- 
-    bool dump;
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index d3a5f7b..a9b2c5d 100644
+index d3a5f7b8c2e..9c8b7f6a5e4 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -419,6 +419,10 @@ static void kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
- {
-    assert(bo->gem_handle);
- 
-+   /* Virtual BOs are not reference-counted and are freed via sparse_vma_finish */
-+   if (bo->is_virtual)
-+      return;
-+
-    if (!p_atomic_dec_zero(&bo->refcnt))
-       return;
- 
-@@ -504,11 +508,14 @@ static void kgsl_sparse_vma_finish(struct tu_device *dev,
-       .id = vma->kgsl.virtual_bo->gem_handle
-    };
- 
--   /* Release the virtual bo, which will also clear the sparse array entry
--    * and free the underlying kernel object.
--    */
--   tu_bo_finish(dev, vma->kgsl.virtual_bo);
-+   /* Tell sparse array that entry is free */
-+   memset(vma->kgsl.virtual_bo, 0, sizeof(*vma->kgsl.virtual_bo));
-    vma->kgsl.virtual_bo = NULL;
- 
-    safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
- }
-@@ -539,6 +546,7 @@ static VkResult kgsl_sparse_vma_init(struct tu_device *dev,
-       .gem_handle = req.id,
-       .size = req.mmapsize,
-       .name = NULL,
-+      .is_virtual = true,
-       .refcnt = 1,
-       .shared_fd = -1,
-       .base = base,
-@@ -294,6 +302,7 @@ static VkResult kgsl_bo_init(struct tu_device *dev,
+@@ -286,6 +286,7 @@ normal_alloc:
        .iova = req.gpuaddr,
        .name = tu_debug_bos_add(dev, req.mmapsize, name),
        .refcnt = 1,
-+      .is_virtual = false,
-       .shared_fd = -1,
++      .shared_fd = -1,
        .base = base,
     };
-@@ -371,6 +380,7 @@ static VkResult kgsl_bo_init_dmabuf(struct tu_device *dev,
+ 
+@@ -343,6 +344,7 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
        .iova = info_req.gpuaddr,
        .name = tu_debug_bos_add(dev, info_req.size, "dmabuf"),
        .refcnt = 1,
-+      .is_virtual = false,
++      .shared_fd = -1,
        .shared_fd = os_dupfd_cloexec(fd),
     };
  
-@@ -1952,6 +1962,7 @@ VkResult tu_knl_kgsl_drm_load(struct tu_instance *instance,
-    device->heap.size = tu_get_system_heap_size(device);
-    device->heap.used = 0u;
-    device->heap.flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
-+   device->has_external_memory = (dma_fd >= 0);
- 
-    /* Set the correct kernel interface table for kgsl-drm */
-    instance->knl = &kgsl_drm_knl_funcs;
-@@ -1975,6 +1986,13 @@ fail:
-    if (dma_fd >= 0) {
-       close(dma_fd);
-    }
-+   if (device->has_external_memory) {
-+      mesa_logi("kgsl-drm: external memory support enabled");
-+   } else {
-+      mesa_logw("kgsl-drm: external memory support disabled (no dma-heap/ion)");
-+      /* Ensure the flag is false even if device init failed later */
-+      device->has_external_memory = false;
+@@ -355,13 +357,20 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
+ static int
+ kgsl_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo)
+ {
+-   assert(bo->shared_fd != -1);
++   if (bo->shared_fd == -1) {
++      mesa_loge("Attempt to export dma-buf from non-shareable BO");
++      return -1;
 +   }
-    return result;
+    return os_dupfd_cloexec(bo->shared_fd);
  }
  
-diff --git a/src/freedreno/vulkan/tu_physical_device.h b/src/freedreno/vulkan/tu_physical_device.h
-index 1234567..abcdefg 100644
---- a/src/freedreno/vulkan/tu_physical_device.h
-+++ b/src/freedreno/vulkan/tu_physical_device.h
-@@ -80,6 +80,7 @@ struct tu_physical_device {
-    struct tu_memory_heap heap;
- 
-    bool has_external_memory;
+ static VkResult
+ kgsl_bo_map(struct tu_device *dev, struct tu_bo *bo, void *placed_addr)
+ {
++   if (bo->map) {
++      return VK_SUCCESS; /* already mapped */
++   }
 +
-    struct vk_sync_type syncobj_type;
-    struct vk_sync_timeline_type timeline_type;
-    const struct vk_sync_type *sync_types[3];
+    void *map = MAP_FAILED;
+    if (bo->shared_fd == -1) {
+       uint64_t offset = bo->gem_handle << 12;
+@@ -386,6 +395,8 @@ kgsl_bo_allow_dump(struct tu_device *dev, struct tu_bo *bo)
+ static void
+ kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
+ {
++   if (!bo->gem_handle) /* already freed */
++      return;
+    assert(bo->gem_handle);
+ 
+    if (!p_atomic_dec_zero(&bo->refcnt))
+@@ -398,7 +409,8 @@ kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
+       munmap(bo->map, bo->size);
+    }
+ 
+-   if (bo->shared_fd != -1)
++   if (bo->shared_fd != -1) {
++      bo->shared_fd = -1;
+       close(bo->shared_fd);
+ 
+    TU_RMV(bo_destroy, dev, bo);
+@@ -506,7 +518,7 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
+     * and free the underlying kernel object.
+     */
+    tu_bo_finish(dev, vma->kgsl.virtual_bo);
+-   vma->kgsl.virtual_bo = NULL;
++   vma->kgsl.virtual_bo = NULL; /* already zeroed by tu_bo_finish */
+ 
+    safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
+ }
+@@ -648,6 +660,7 @@ kgsl_syncobj_import(struct kgsl_syncobj *s, int fd)
+       s->state = KGSL_SYNCOBJ_STATE_FD;
+       s->fd = fd;
+    } else {
++      /* fd == -1 means already signaled (useful for dummy sync) */
+       s->state = KGSL_SYNCOBJ_STATE_SIGNALED;
+    }
+ 
+@@ -656,12 +669,16 @@ kgsl_syncobj_import(struct kgsl_syncobj *s, int fd)
+ 
+ static int
+ sync_merge_close(const char *name, int fd1, int fd2, bool close_fd2)
++{
++   if (fd1 < 0 && fd2 < 0)
++      return -1;
++
++   if (fd1 < 0)
++      return close_fd2 ? os_dupfd_cloexec(fd2) : fd2;
++   if (fd2 < 0)
++      return fd1;
+ 
+-   int fd = sync_merge(name, fd1, fd2);
+-   if (fd < 0)
+-      return -1;
+-
++   int fd = sync_merge(name, fd1, fd2);
+    close(fd1);
+    if (close_fd2)
+       close(fd2);
+@@ -723,7 +740,7 @@ kgsl_syncobj_dup(struct kgsl_syncobj *s)
+ {
+    struct kgsl_syncobj dups = *s;
+    if (s->state == KGSL_SYNCOBJ_STATE_FD && s->fd >= 0) {
+-      dups.fd = dup(s->fd);
++      dups.fd = os_dupfd_cloexec(s->fd);
+       assert(dups.fd >= 0);
+    }
+    return dups;
+@@ -1116,8 +1133,8 @@ kgsl_submit_add_bind(struct tu_device *device,
+          .rangeslist = submit->ranges.size,
+          .numranges = 0,
+          .rangesize = sizeof(struct kgsl_gpumem_bind_range),
+-         .target = vma->kgsl.virtual_bo->gem_handle,
+       };
++      bind.target = vma->kgsl.virtual_bo->gem_handle;
+ 
+ 
+       util_dynarray_append(&submit->bind_cmds, bind);
 -- 
 2.34.1

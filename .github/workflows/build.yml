@@ -66,7 +66,7 @@ jobs:
         run: |
           export CCACHE_DIR=/root/.ccache
           echo "Building Mesa..."
-          cd ~/mesa
+          cd ~/mesa-unified
           meson setup build/ \
             --prefix=/usr \
             -Dplatforms=x11,wayland \

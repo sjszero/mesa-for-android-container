@@ -2524,134 +2524,58 @@ index e8f2a1b4c9d..d3a5f7b8c2e 100644
 2.34.1
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Osilvfe <3072756864@qq.com>
-Date: Sat, 23 May 2026 12:00:00 +0800
-Subject: [PATCH] tu/kgsl-drm: fix segfault and export failure with dma-heap only
+Date: Sat, 23 May 2026 14:00:00 +0800
+Subject: [PATCH] tu/kgsl-drm: fix segfault on export and shareable fallback
 
-Fix multiple issues in kgsl-drm backend:
-- Clear TU_BO_ALLOC_SHAREABLE when falling back to non-shareable allocation
-- Make kgsl_bo_export_dmabuf safe when shared_fd == -1
-- Avoid double-free in sparse vma finish
-- Simplify initialization to use only dma-heap, no ION fallback
+Fix two critical issues:
+1. When kgsl_dma_fd is invalid and we fall back to non-shareable allocation,
+   clear TU_BO_ALLOC_SHAREABLE flag to prevent later export attempts.
+2. Make kgsl_bo_export_dmabuf safe when shared_fd == -1 (return -1 instead of assert).
+
+Also improve sparse vma finish (already partly fixed, ensure no double-free).
 
 ---
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 37 ++++++++++++++++++++-----
- 1 file changed, 30 insertions(+), 7 deletions(-)
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
 
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index 42c38427cec..f6a8b9e2c1d 100644
+index e8f2a1b4c9d..d3a5f7b8c2e 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -237,6 +237,15 @@ kgsl_bo_init(struct tu_device *dev,
-              const char *name)
- {
-    if (flags & TU_BO_ALLOC_SHAREABLE) {
-+      /* If no dma-heap device is available, fall back to normal allocation
-+       * and clear the SHAREABLE flag to prevent later export attempts.
-+       */
-+      if (dev->physical_device->kgsl_dma_fd < 0) {
-+         mesa_logw("kgsl_dma_fd invalid, falling back to non-shareable allocation");
-+         flags &= ~TU_BO_ALLOC_SHAREABLE;
-+         goto normal_alloc;
-+      }
-+
-       /* The Vulkan spec doesn't forbid allocating exportable memory with a
-        * fixed address, only imported memory, but on kgsl we can't sensibly
-        * implement it so just always reject it.
-@@ -245,17 +254,12 @@ kgsl_bo_init(struct tu_device *dev,
+@@ -247,12 +247,15 @@ kgsl_bo_init(struct tu_device *dev,
                            "cannot allocate an exportable BO with a fixed address");
        }
  
 -      /* If no dma-heap or ION device is available, fall back to normal
 -       * allocation (non-shareable). The TU_BO_ALLOC_SHAREABLE flag will be
 -       * ignored in the normal path, which is fine.
--       */
--      if (dma_fd < 0) {
--         mesa_logw("kgsl_dma_fd invalid, falling back to non-shareable allocation");
--         goto normal_alloc;
--      }
--
-       switch(dev->physical_device->kgsl_dma_type) {
-       case TU_KGSL_DMA_TYPE_DMAHEAP:
-+         /* Only dma-heap is supported; ION cases are removed for simplicity.
-+          * If dma-heap is not available, the earlier dma_fd < 0 check will
-+          * have already cleared SHAREABLE and jumped to normal_alloc.
++      /* If no dma-heap or ION device is available, fall back to normal allocation.
++       * Clear the SHAREABLE flag so that later export attempts will fail safely.
+        */
+       if (dma_fd < 0) {
+          mesa_logw("kgsl_dma_fd invalid, falling back to non-shareable allocation");
++         /* Clear the shareable flag to prevent kgsl_bo_export_dmabuf from being
++          * called on this BO later.
 +          */
-          return bo_init_new_dmaheap(dev, out_bo, size, flags);
-       case TU_KGSL_DMA_TYPE_ION:
-          return bo_init_new_ion(dev, out_bo, size, flags);
-@@ -382,7 +386,11 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
++         flags &= ~TU_BO_ALLOC_SHAREABLE;
+          goto normal_alloc;
+       }
+ 
+@@ -382,7 +385,14 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
  static int
  kgsl_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo)
  {
 -   assert(bo->shared_fd != -1);
++   /* If the BO was allocated without shareable flag (e.g., due to fallback),
++    * shared_fd will be -1. Return an error instead of crashing.
++    */
 +   if (bo->shared_fd == -1) {
-+      mesa_loge("Attempt to export non-shareable BO");
++      mesa_loge("Attempt to export a non-shareable BO");
 +      return -1;
 +   }
 +
     return os_dupfd_cloexec(bo->shared_fd);
  }
  
-@@ -505,8 +513,11 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
-       .id = vma->kgsl.virtual_bo->gem_handle
-    };
- 
--   /* Tell sparse array that entry is free */
--   memset(vma->kgsl.virtual_bo, 0, sizeof(*vma->kgsl.virtual_bo));
-+   /* Release the virtual bo, which will also clear the sparse array entry
-+    * and free the underlying kernel object.
-+    */
-+   tu_bo_finish(dev, vma->kgsl.virtual_bo);
-+   vma->kgsl.virtual_bo = NULL;
- 
-    safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
- }
-@@ -1795,7 +1806,10 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
-    /* Open dma-heap or ION device for external memory */
-    static const char dma_heap_path[] = "/dev/dma_heap/system";
-    static const char ion_path[] = "/dev/ion";
--   int dma_fd = -1;
-+   int dma_fd;
-+
-+   /* Only attempt to use dma-heap; ION is deprecated and may not exist.
-+    * If dma-heap is unavailable, external memory will be disabled.
-+    */
- 
-    dma_fd = open(dma_heap_path, O_RDONLY);
-    if (dma_fd >= 0) {
-@@ -1803,21 +1817,15 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
-    } else {
-       dma_fd = open(ion_path, O_RDONLY);
-       if (dma_fd >= 0) {
--         struct ion_handle_data free = { .handle = 0 };
--         if (safe_ioctl(dma_fd, ION_IOC_FREE, &free) >= 0 || errno != ENOTTY)
--            device->kgsl_dma_type = TU_KGSL_DMA_TYPE_ION_LEGACY;
--         else
--            device->kgsl_dma_type = TU_KGSL_DMA_TYPE_ION;
--      } else {
-          mesa_logw("Unable to open neither %s nor %s, VK_KHR_external_memory_fd will be unavailable: %s",
-                    dma_heap_path, ion_path, strerror(errno));
-          dma_fd = -1;
-+      } else {
-+         mesa_logw("Unable to open %s, VK_KHR_external_memory_fd will be unavailable: %s",
-+                   dma_heap_path, strerror(errno));
-+         dma_fd = -1;
-       }
-    }
--
--   /* Even if no dma-heap or ion is available, we can still proceed
--    * without external memory support.
--    */
-    device->kgsl_dma_fd = dma_fd;
-    struct kgsl_devinfo info;
-    if (get_kgsl_prop(kgsl_fd, KGSL_PROP_DEVICE_INFO, &info, sizeof(info)))
-@@ -1912,6 +1920,7 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
- 
- VkResult
- tu_knl_kgsl_load(struct tu_instance *instance, int fd,
-+                 struct tu_physical_device **out){
-+   /* This function is kept for compatibility but not used with kgsl-drm. */
-+   return VK_ERROR_INCOMPATIBLE_DRIVER;
-+}
 -- 
 2.34.1

@@ -2523,28 +2523,30 @@ index e8f2a1b4c9d..d3a5f7b8c2e 100644
 -- 
 2.34.1
 From: Fix <fix@example.com>
-Date: Sun, 24 May 2026 18:00:00 +0800
+Date: Sun, 24 May 2026 22:00:00 +0800
 Subject: [PATCH] tu/kgsl-drm: final fixes for external memory and sparse vma
 
-- Mark virtual BOs with is_virtual flag to skip kgsl_bo_finish.
-- Restore original kgsl_sparse_vma_finish (memset only) to avoid double-free.
-- Disable VK_KHR_external_memory_fd when kgsl_dma_fd invalid.
-- Make tu_GetMemoryFdKHR return error if no dma-buf fd available.
+- Restore original kgsl_sparse_vma_finish (memset only)
+- Mark virtual BOs with is_virtual flag to skip kgsl_bo_finish
+- Add has_external_memory and fail vkGetMemoryFdKHR early
+- Clean up fallback path for kgsl_bo_init
+
 ---
- src/freedreno/vulkan/tu_device.cc          |  6 ++++++
+ src/freedreno/vulkan/tu_device.cc          |  7 ++++++
  src/freedreno/vulkan/tu_knl.h              |  1 +
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc    | 19 ++++++++++++++++++-
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc    | 29 ++++++++++++++++++++---
  src/freedreno/vulkan/tu_physical_device.h  |  1 +
- 4 files changed, 26 insertions(+), 1 deletion(-)
+ 4 files changed, 35 insertions(+), 3 deletions(-)
 
 diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
 index 123456789..abcdefg 100644
 --- a/src/freedreno/vulkan/tu_device.cc
 +++ b/src/freedreno/vulkan/tu_device.cc
-@@ -2150,6 +2150,12 @@ tu_GetMemoryFdKHR(VkDevice _device,
+@@ -2145,6 +2145,13 @@ tu_GetMemoryFdKHR(VkDevice _device,
+ {
     VK_FROM_HANDLE(tu_device, device, _device);
     VK_FROM_HANDLE(tu_device_memory, memory, pGetFdInfo->memory);
- 
++
 +   /* If external memory is not available (no dma-heap/ion), fail early */
 +   if (!device->physical_device->has_external_memory) {
 +      return vk_errorf(device, VK_ERROR_INVALID_EXTERNAL_HANDLE,
@@ -2567,20 +2569,21 @@ index 623b21f8de8..d4c5a6b7e8f 100644
  
     bool dump;
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index d3a5f7b8c2e..f9e0d1c2b3a 100644
+index d3a5f7b8c2e..a9b2c5d6e7f 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -419,6 +419,9 @@ kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
+@@ -419,6 +419,10 @@ kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
  {
     assert(bo->gem_handle);
  
++   /* Virtual BOs are not reference-counted and are freed via sparse_vma_finish */
 +   if (bo->is_virtual)
 +      return;
 +
     if (!p_atomic_dec_zero(&bo->refcnt))
        return;
  
-@@ -504,11 +507,18 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
+@@ -504,11 +508,14 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
        .id = vma->kgsl.virtual_bo->gem_handle
     };
  
@@ -2594,7 +2597,7 @@ index d3a5f7b8c2e..f9e0d1c2b3a 100644
  
     safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
  }
-@@ -539,6 +549,7 @@ kgsl_sparse_vma_init(struct tu_device *dev,
+@@ -539,6 +546,7 @@ kgsl_sparse_vma_init(struct tu_device *dev,
        .gem_handle = req.id,
        .size = req.mmapsize,
        .name = NULL,
@@ -2602,7 +2605,7 @@ index d3a5f7b8c2e..f9e0d1c2b3a 100644
        .refcnt = 1,
        .shared_fd = -1,
        .base = base,
-@@ -294,6 +305,7 @@ kgsl_bo_init(struct tu_device *dev,
+@@ -294,6 +302,7 @@ kgsl_bo_init(struct tu_device *dev,
        .iova = req.gpuaddr,
        .name = tu_debug_bos_add(dev, req.mmapsize, name),
        .refcnt = 1,
@@ -2610,7 +2613,7 @@ index d3a5f7b8c2e..f9e0d1c2b3a 100644
        .shared_fd = -1,
        .base = base,
     };
-@@ -371,6 +383,7 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
+@@ -371,6 +380,7 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
        .iova = info_req.gpuaddr,
        .name = tu_debug_bos_add(dev, info_req.size, "dmabuf"),
        .refcnt = 1,
@@ -2618,7 +2621,7 @@ index d3a5f7b8c2e..f9e0d1c2b3a 100644
        .shared_fd = os_dupfd_cloexec(fd),
     };
  
-@@ -1952,6 +1965,7 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
+@@ -1952,6 +1962,7 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
     device->heap.size = tu_get_system_heap_size(device);
     device->heap.used = 0u;
     device->heap.flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
@@ -2626,7 +2629,7 @@ index d3a5f7b8c2e..f9e0d1c2b3a 100644
  
     /* Set the correct kernel interface table for kgsl-drm */
     instance->knl = &kgsl_drm_knl_funcs;
-@@ -1975,6 +1989,9 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
+@@ -1975,6 +1986,13 @@ fail:
     if (dma_fd >= 0) {
        close(dma_fd);
     }
@@ -2634,6 +2637,8 @@ index d3a5f7b8c2e..f9e0d1c2b3a 100644
 +      mesa_logi("kgsl-drm: external memory support enabled");
 +   } else {
 +      mesa_logw("kgsl-drm: external memory support disabled (no dma-heap/ion)");
++      /* Ensure the flag is false even if device init failed later */
++      device->has_external_memory = false;
 +   }
     return result;
  }

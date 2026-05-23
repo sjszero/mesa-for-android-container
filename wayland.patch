@@ -2526,27 +2526,21 @@ From: Fix <fix@example.com>
 Date: Sun, 24 May 2026 22:00:00 +0800
 Subject: [PATCH] tu/kgsl-drm: final fixes for external memory and sparse vma
 
-- Restore original kgsl_sparse_vma_finish (memset only)
-- Mark virtual BOs with is_virtual flag to skip kgsl_bo_finish
-- Add has_external_memory and fail vkGetMemoryFdKHR early
-- Clean up fallback path for kgsl_bo_init
-
 ---
- src/freedreno/vulkan/tu_device.cc          |  7 ++++++
- src/freedreno/vulkan/tu_knl.h              |  1 +
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc    | 29 ++++++++++++++++++++---
- src/freedreno/vulkan/tu_physical_device.h  |  1 +
+ src/freedreno/vulkan/tu_device.cc         |  7 +++++++
+ src/freedreno/vulkan/tu_knl.h             |  1 +
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc   | 29 ++++++++++++++++++++---
+ src/freedreno/vulkan/tu_physical_device.h |  1 +
  4 files changed, 35 insertions(+), 3 deletions(-)
 
 diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
-index 123456789..abcdefg 100644
+index 1234567..abcdefg 100644
 --- a/src/freedreno/vulkan/tu_device.cc
 +++ b/src/freedreno/vulkan/tu_device.cc
-@@ -2145,6 +2145,13 @@ tu_GetMemoryFdKHR(VkDevice _device,
- {
+@@ -2145,6 +2145,13 @@ VkResult VKAPI_CALL tu_GetMemoryFdKHR(
     VK_FROM_HANDLE(tu_device, device, _device);
     VK_FROM_HANDLE(tu_device_memory, memory, pGetFdInfo->memory);
-+
+ 
 +   /* If external memory is not available (no dma-heap/ion), fail early */
 +   if (!device->physical_device->has_external_memory) {
 +      return vk_errorf(device, VK_ERROR_INVALID_EXTERNAL_HANDLE,
@@ -2557,7 +2551,7 @@ index 123456789..abcdefg 100644
  
     /* At the moment, we support only the below handle types. */
 diff --git a/src/freedreno/vulkan/tu_knl.h b/src/freedreno/vulkan/tu_knl.h
-index 623b21f8de8..d4c5a6b7e8f 100644
+index 623b21f..d4c5a6b 100644
 --- a/src/freedreno/vulkan/tu_knl.h
 +++ b/src/freedreno/vulkan/tu_knl.h
 @@ -61,6 +61,7 @@ struct tu_bo {
@@ -2569,10 +2563,10 @@ index 623b21f8de8..d4c5a6b7e8f 100644
  
     bool dump;
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index d3a5f7b8c2e..a9b2c5d6e7f 100644
+index d3a5f7b..a9b2c5d 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -419,6 +419,10 @@ kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
+@@ -419,6 +419,10 @@ static void kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
  {
     assert(bo->gem_handle);
  
@@ -2583,7 +2577,7 @@ index d3a5f7b8c2e..a9b2c5d6e7f 100644
     if (!p_atomic_dec_zero(&bo->refcnt))
        return;
  
-@@ -504,11 +508,14 @@ kgsl_sparse_vma_finish(struct tu_device *dev,
+@@ -504,11 +508,14 @@ static void kgsl_sparse_vma_finish(struct tu_device *dev,
        .id = vma->kgsl.virtual_bo->gem_handle
     };
  
@@ -2597,7 +2591,7 @@ index d3a5f7b8c2e..a9b2c5d6e7f 100644
  
     safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUOBJ_FREE, &req);
  }
-@@ -539,6 +546,7 @@ kgsl_sparse_vma_init(struct tu_device *dev,
+@@ -539,6 +546,7 @@ static VkResult kgsl_sparse_vma_init(struct tu_device *dev,
        .gem_handle = req.id,
        .size = req.mmapsize,
        .name = NULL,
@@ -2605,7 +2599,7 @@ index d3a5f7b8c2e..a9b2c5d6e7f 100644
        .refcnt = 1,
        .shared_fd = -1,
        .base = base,
-@@ -294,6 +302,7 @@ kgsl_bo_init(struct tu_device *dev,
+@@ -294,6 +302,7 @@ static VkResult kgsl_bo_init(struct tu_device *dev,
        .iova = req.gpuaddr,
        .name = tu_debug_bos_add(dev, req.mmapsize, name),
        .refcnt = 1,
@@ -2613,7 +2607,7 @@ index d3a5f7b8c2e..a9b2c5d6e7f 100644
        .shared_fd = -1,
        .base = base,
     };
-@@ -371,6 +380,7 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
+@@ -371,6 +380,7 @@ static VkResult kgsl_bo_init_dmabuf(struct tu_device *dev,
        .iova = info_req.gpuaddr,
        .name = tu_debug_bos_add(dev, info_req.size, "dmabuf"),
        .refcnt = 1,
@@ -2621,7 +2615,7 @@ index d3a5f7b8c2e..a9b2c5d6e7f 100644
        .shared_fd = os_dupfd_cloexec(fd),
     };
  
-@@ -1952,6 +1962,7 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
+@@ -1952,6 +1962,7 @@ VkResult tu_knl_kgsl_drm_load(struct tu_instance *instance,
     device->heap.size = tu_get_system_heap_size(device);
     device->heap.used = 0u;
     device->heap.flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;

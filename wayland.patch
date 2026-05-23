@@ -2525,29 +2525,32 @@ index e8f2a1b4c9d..d3a5f7b8c2e 100644
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Osilvfe <3072756864@qq.com>
 Date: Sat, 23 May 2026 16:00:00 +0800
-Subject: [PATCH] tu/kgsl-drm: fix compile error and export safety
-
-Fix invalid conversion from int to tu_bo_alloc_flags when clearing
-SHAREABLE flag. Also make kgsl_bo_export_dmabuf safe for non-shareable BOs.
+Subject: [PATCH] tu/kgsl-drm: fix compile error and export safety (v2)
 
 ---
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 6 +++++-
- 1 file changed, 5 insertions(+), 1 deletion(-)
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
 
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index e8f2a1b4c9d..a0b1c2d3e4f 100644
+index e8f2a1b4c9d..0d4e5f6a7b8 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -250,7 +250,7 @@ kgsl_bo_init(struct tu_device *dev,
-        */
-       if (dma_fd < 0) {
-          mesa_logw("kgsl_dma_fd invalid, falling back to non-shareable allocation");
--         flags &= ~TU_BO_ALLOC_SHAREABLE;
-+         flags = (enum tu_bo_alloc_flags)(flags & ~TU_BO_ALLOC_SHAREABLE);
-          goto normal_alloc;
+@@ -245,11 +245,13 @@ kgsl_bo_init(struct tu_device *dev,
+                           "cannot allocate an exportable BO with a fixed address");
        }
  
-@@ -382,7 +382,11 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
+-      /* If no dma-heap or ION device is available, fall back to normal
+-       * allocation (non-shareable). The TU_BO_ALLOC_SHAREABLE flag will be
+-       * ignored in the normal path, which is fine.
++      /* If no dma-heap or ION device is available, fall back to normal allocation.
++       * Clear the SHAREABLE flag so that later export attempts will fail safely.
+        */
+       if (dma_fd < 0) {
++         flags = (enum tu_bo_alloc_flags)(flags & ~TU_BO_ALLOC_SHAREABLE);
+          mesa_logw("kgsl_dma_fd invalid, falling back to non-shareable allocation");
+          goto normal_alloc;
+       }
+@@ -382,7 +384,11 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
  static int
  kgsl_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo)
  {

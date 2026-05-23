@@ -2157,3 +2157,41 @@ index e4b80b1..f5c92d3 100644
     if (result != VK_SUCCESS) {
 -- 
 2.47.3
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: user <user@localhost>
+Date: Sun, 24 May 2026 12:00:00 +0000
+Subject: [PATCH] freedreno/tu: disable unstable features in kgsl-drm backend
+
+Disable sparse binding, preemption, and lazy BOs for kgsl-drm to avoid
+crashes in tu_CreateDevice on certain Adreno GPUs.
+
+Signed-off-by: user <user@localhost>
+---
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+index e4b80b1..fb3c2d1 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -1900,6 +1900,18 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
+    /* We don't actually use the VMA, but set a fake offset so that it doesn't
+     * think we're trying to allocate 0 and assert.
+     */
++   /* Disable problematic features for kgsl-drm backend to avoid crashes */
++   device->has_sparse = false;
++   device->has_sparse_prr = false;
++   device->has_lazy_bos = false;
++   device->has_preemption = false;
++   /* Force timeline sync type that is known to work */
++   device->timeline_type = vk_sync_timeline_get_type(&vk_kgsl_sync_type);
++   /* Ensure we don't use set_iova if it causes issues */
++   device->has_set_iova = false;
++   /* Disable cached coherent memory if unstable */
++   device->has_cached_coherent_memory = false;
++
+    device->va_start = 0x100000000;
+ 
+ 
+-- 
+2.47.3

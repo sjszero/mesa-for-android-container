@@ -50,17 +50,16 @@ jobs:
       - name: Clone repository
         run: |
           cd ~
-          git clone https://gitlab.freedesktop.org/mesa/mesa.git
+          git clone https://github.com/whitebelyash/mesa-unified.git
 
       - name: Set release name suffix
         shell: bash
         run: |
-          cd ~/mesa
+          cd ~/mesa-unified
           version=$(grep -v '^[[:space:]]*$' VERSION | head -n1)
           build_date=$(TZ=Asia/Shanghai date +%Y%m%d)
           echo "MESA_RELEASE_NAME_SUFFIX=${version}-${build_date}_debian_trixie_arm64" >> "$GITHUB_ENV"
-          wget https://github.com/sjszero/mesa-for-android-container/raw/mesa-test/wayland.patch
-          patch -p1 -f < wayland.patch
+
           
       - name: Build Mesa
         shell: bash
@@ -85,7 +84,7 @@ jobs:
             -Dmicrosoft-clc=disabled \
             -Dvalgrind=disabled \
             -Dgles1=disabled \
-            -Dfreedreno-kmds=kgsl-drm \
+            -Dfreedreno-kmds=kgsl \
             -Dbuildtype=release
           ninja -C build/
           echo "Mesa build completed successfully!"
@@ -101,7 +100,7 @@ jobs:
         shell: bash
         run: |
           echo "Packaging Mesa..."
-          cd ~/mesa
+          cd ~/mesa-unified
           mkdir /tmp/mesa-install-tmp
           DESTDIR=/tmp/mesa-install-tmp meson install -C build/
           tar -zcvf mesa_${MESA_RELEASE_NAME_SUFFIX}.tar.gz -C /tmp/mesa-install-tmp .
@@ -116,8 +115,9 @@ jobs:
         with:
           name: mesa-for-android-container_${{ env.MESA_RELEASE_NAME_SUFFIX }}
           path: |
-            ~/mesa/*.tar.gz
-            ~/mesa/sha256sums.txt
+            ~/mesa-unified/*.tar.gz
+            ~/mesa
+            /sha256sums.txt
           retention-days: 90
 
   ubuntu-noble:

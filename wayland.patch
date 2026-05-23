@@ -2524,51 +2524,34 @@ index e8f2a1b4c9d..d3a5f7b8c2e 100644
 2.34.1
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Osilvfe <3072756864@qq.com>
-Date: Sat, 23 May 2026 14:00:00 +0800
-Subject: [PATCH] tu/kgsl-drm: fix segfault on export and shareable fallback
+Date: Sat, 23 May 2026 16:00:00 +0800
+Subject: [PATCH] tu/kgsl-drm: fix compile error and export safety
 
-Fix two critical issues:
-1. When kgsl_dma_fd is invalid and we fall back to non-shareable allocation,
-   clear TU_BO_ALLOC_SHAREABLE flag to prevent later export attempts.
-2. Make kgsl_bo_export_dmabuf safe when shared_fd == -1 (return -1 instead of assert).
-
-Also improve sparse vma finish (already partly fixed, ensure no double-free).
+Fix invalid conversion from int to tu_bo_alloc_flags when clearing
+SHAREABLE flag. Also make kgsl_bo_export_dmabuf safe for non-shareable BOs.
 
 ---
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 14 ++++++++++++--
- 1 file changed, 12 insertions(+), 2 deletions(-)
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
 
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index e8f2a1b4c9d..d3a5f7b8c2e 100644
+index e8f2a1b4c9d..a0b1c2d3e4f 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -247,12 +247,15 @@ kgsl_bo_init(struct tu_device *dev,
-                           "cannot allocate an exportable BO with a fixed address");
-       }
- 
--      /* If no dma-heap or ION device is available, fall back to normal
--       * allocation (non-shareable). The TU_BO_ALLOC_SHAREABLE flag will be
--       * ignored in the normal path, which is fine.
-+      /* If no dma-heap or ION device is available, fall back to normal allocation.
-+       * Clear the SHAREABLE flag so that later export attempts will fail safely.
+@@ -250,7 +250,7 @@ kgsl_bo_init(struct tu_device *dev,
         */
        if (dma_fd < 0) {
           mesa_logw("kgsl_dma_fd invalid, falling back to non-shareable allocation");
-+         /* Clear the shareable flag to prevent kgsl_bo_export_dmabuf from being
-+          * called on this BO later.
-+          */
-+         flags &= ~TU_BO_ALLOC_SHAREABLE;
+-         flags &= ~TU_BO_ALLOC_SHAREABLE;
++         flags = (enum tu_bo_alloc_flags)(flags & ~TU_BO_ALLOC_SHAREABLE);
           goto normal_alloc;
        }
  
-@@ -382,7 +385,14 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
+@@ -382,7 +382,11 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
  static int
  kgsl_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo)
  {
 -   assert(bo->shared_fd != -1);
-+   /* If the BO was allocated without shareable flag (e.g., due to fallback),
-+    * shared_fd will be -1. Return an error instead of crashing.
-+    */
 +   if (bo->shared_fd == -1) {
 +      mesa_loge("Attempt to export a non-shareable BO");
 +      return -1;

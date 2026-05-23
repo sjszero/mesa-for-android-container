@@ -2091,4 +2091,69 @@ index 0000000..e4b80b1
 +}
 -- 
 2.47.3
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: user <user@localhost>
+Date: Sun, 24 May 2026 12:00:00 +0000
+Subject: [PATCH] freedreno/tu: make kgsl drm backend probe multiple device paths
 
+Instead of hardcoding /dev/kgsl-3d0, try common device nodes used in
+Android containers (/dev/dri/renderD128, /dev/dri/card0) to improve
+compatibility.
+
+Signed-off-by: user <user@localhost>
+---
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 30 +++++++++++++++++++++----
+ 1 file changed, 26 insertions(+), 4 deletions(-)
+
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+index e4b80b1..f5c92d3 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -1927,15 +1927,37 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
+                      struct tu_physical_device **out,
+                      const char *path)
+ {
++   /* List of device paths to try in order */
++   static const char * const dev_paths[] = {
++      "/dev/kgsl-3d0",
++      "/dev/dri/renderD128",
++      "/dev/dri/card0",
++      NULL
++   };
++
+    int kgsl_fd;
++   const char *used_path = NULL;
+ 
+-   kgsl_fd = open(path, O_RDWR | O_CLOEXEC);
+-   if (kgsl_fd < 0) {
+-      if (errno == ENOENT)
+-         return VK_ERROR_INCOMPATIBLE_DRIVER;
++   /* Try each path until one succeeds */
++   for (const char * const *p = dev_paths; *p; p++) {
++      kgsl_fd = open(*p, O_RDWR | O_CLOEXEC);
++      if (kgsl_fd >= 0) {
++         used_path = *p;
++         break;
++      }
++   }
++
++   if (kgsl_fd < 0) {
++      /* Also try the originally provided path as a fallback */
++      kgsl_fd = open(path, O_RDWR | O_CLOEXEC);
++      if (kgsl_fd >= 0) {
++         used_path = path;
++      } else {
++         mesa_loge("Failed to open any kgsl/dri device node: %s", strerror(errno));
++         return VK_ERROR_INCOMPATIBLE_DRIVER;
++      }
++   }
+ 
+-      return vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+-                       "failed to open device %s", path);
+-   }
++   mesa_logi("KGSL DRM backend opened device: %s", used_path);
+ 
+    VkResult result = tu_knl_kgsl_load(instance, kgsl_fd, out);
+    if (result != VK_SUCCESS) {
+-- 
+2.47.3

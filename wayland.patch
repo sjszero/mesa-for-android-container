@@ -2200,113 +2200,70 @@ From: user <user@localhost>
 Date: Sun, 24 May 2026 12:00:00 +0000
 Subject: [PATCH] freedreno/tu: workaround AHB bus errors in kgsl-drm backend
 
-Disable replayable BO mapping, sparse support, and force IO coherent
-memory to avoid CP AHB bus errors observed on some KGSL kernels.
+Disable sparse support and force IO coherent memory to avoid CP AHB bus
+errors observed on some KGSL kernels. Keep existing function bodies
+intact as they are not called when has_sparse=false.
 
 Signed-off-by: user <user@localhost>
 ---
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 35 +++++++++++++++++++++++--
- 1 file changed, 33 insertions(+), 2 deletions(-)
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 27 +++++++++++++++++++++++--
+ 1 file changed, 25 insertions(+), 2 deletions(-)
 
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index e4b80b1..f5e2d4c 100644
+index e4b80b1..d6f7c3e 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -244,6 +244,15 @@ kgsl_bo_init(struct tu_device *dev,
+@@ -244,6 +244,14 @@ kgsl_bo_init(struct tu_device *dev,
        .size = size,
     };
  
-+   /* Workaround: KGSL_MEMFLAGS_USE_CPU_MAP can cause AHB bus errors on some kernels.
-+    * Disable it for all BOs except when explicitly required by client_iova.
++   /* Workaround: Force IO coherent for all uncached memory to avoid coherency
++    * issues that may trigger AHB bus errors.
 +    */
-+   bool use_cpu_map = (flags & TU_BO_ALLOC_REPLAYABLE) && client_iova != 0;
-+   if (use_cpu_map) {
-+      mesa_logi("KGSL: allocating replayable BO with fixed IOVA 0x%lx", client_iova);
-+      req.flags |= KGSL_MEMFLAGS_USE_CPU_MAP;
++   if (!(mem_property & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) {
++      req.flags |= KGSL_MEMFLAGS_IOCOHERENT;
 +   }
-+
++   /* Do not use KGSL_MEMFLAGS_USE_CPU_MAP unless explicitly required */
++   bool use_cpu_map = (flags & TU_BO_ALLOC_REPLAYABLE) && client_iova != 0;
     if (mem_property & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) {
        if (mem_property & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
           req.flags |= KGSL_MEMFLAGS_IOCOHERENT;
-@@ -252,6 +261,8 @@ kgsl_bo_init(struct tu_device *dev,
-       req.flags |= KGSL_CACHEMODE_WRITEBACK << KGSL_CACHEMODE_SHIFT;
-    } else {
-       req.flags |= KGSL_CACHEMODE_WRITECOMBINE << KGSL_CACHEMODE_SHIFT;
-+      /* Force IO coherent for uncached memory to avoid coherency issues */
-+      req.flags |= KGSL_MEMFLAGS_IOCOHERENT;
-    }
- 
+@@ -258,7 +266,8 @@ kgsl_bo_init(struct tu_device *dev,
     if (flags & TU_BO_ALLOC_GPU_READ_ONLY)
-@@ -259,7 +270,7 @@ kgsl_bo_init(struct tu_device *dev,
+       req.flags |= KGSL_MEMFLAGS_GPUREADONLY;
  
-    if (flags & TU_BO_ALLOC_REPLAYABLE)
+-   if (flags & TU_BO_ALLOC_REPLAYABLE)
++   /* Only set USE_CPU_MAP if we have a fixed IOVA */
++   if (use_cpu_map)
        req.flags |= KGSL_MEMFLAGS_USE_CPU_MAP;
--
-+   
+ 
     int ret;
- 
-    ret = safe_ioctl(dev->physical_device->local_fd,
-@@ -278,7 +289,7 @@ kgsl_bo_init(struct tu_device *dev,
- 
-    VkResult result = VK_SUCCESS;
- 
--   if (lazy_vma) {
-+   if (lazy_vma && false) {  /* Disable sparse bind for now - may cause AHB errors */
-       result = kgsl_sparse_vma_map(dev, lazy_vma, bo, 0);
-    } else if (flags & TU_BO_ALLOC_REPLAYABLE) {
-       result = kgsl_bo_user_map(dev, bo, client_iova);
-@@ -471,6 +482,14 @@ kgsl_sparse_vma_init(struct tu_device *dev,
- {
-    /* Note: we cannot use kgsl_gpumem_alloc_id because it only has a 32-bit
-     * flags value. kgsl_gpuobj_alloc seems to be the only ioctl we can use.
-+    *
-+    * Sparse support is known to be unstable on some KGLS kernels and
-+    * can trigger AHB bus errors. Disable it entirely.
-+    */
-+   return vk_errorf(dev, VK_ERROR_FEATURE_NOT_PRESENT,
-+                    "kgsl-drm sparse support disabled due to AHB bus errors");
-+
-+   /* Original sparse code commented out
-     */
-    struct kgsl_gpuobj_alloc req = {
-       .size = size,
-@@ -509,6 +528,7 @@ kgsl_sparse_vma_init(struct tu_device *dev,
- 
-    out_vma->kgsl.virtual_bo = bo;
-    *out_iova = bo->iova;
-+   */
-    return VK_SUCCESS;
- }
- 
-@@ -1798,6 +1818,12 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
-    device->has_set_iova = kgsl_is_memory_type_supported(
-       fd, KGSL_MEMFLAGS_USE_CPU_MAP);
- 
-+   /* Force disable set_iova if it is known to cause issues */
-+   if (device->has_set_iova) {
-+      mesa_logi("KGSL: set_iova supported but disabled due to stability concerns");
-+      device->has_set_iova = false;
-+   }
-+
-    /* Even if kernel is new enough, the GPU itself may not support it. */
-    device->has_cached_coherent_memory = kgsl_is_memory_type_supported(
-       fd, KGSL_MEMFLAGS_IOCOHERENT |
-@@ -1806,10 +1832,15 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
+@@ -1798,12 +1807,26 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
     device->has_sparse = kgsl_is_virtual_bo_supported(fd);
     device->has_sparse_prr = device->has_sparse;
     device->has_lazy_bos = device->has_sparse;
-+   /* Disable sparse completely to avoid AHB errors */
-+   device->has_sparse = false;
-+   device->has_sparse_prr = false;
-+   device->has_lazy_bos = false;
++
++   /* Disable sparse features completely to avoid AHB bus errors */
++   if (device->has_sparse) {
++      mesa_logi("KGSL: sparse binding disabled due to stability concerns");
++      device->has_sparse = false;
++      device->has_sparse_prr = false;
++      device->has_lazy_bos = false;
++   }
 +
     get_kgsl_prop(fd, KGSL_PROP_GPU_VA64_SIZE, &device->va_size,
                   sizeof(device->va_size));
     /* We don't actually use the VMA, but set a fake offset so that it doesn't
--    * think we're trying to allocate 0 and assert.
-+    * think we're trying to allocate 0 and assert. 
+     * think we're trying to allocate 0 and assert.
      */
     device->va_start = 0x100000000;
++   /* Disable set_iova if supported to prevent potential memory mapping issues */
++   if (device->has_set_iova) {
++      mesa_logi("KGSL: has_set_iova disabled for stability");
++      device->has_set_iova = false;
++   }
  
+ 
+    /* preemption is always supported on kgsl */
 -- 
 2.47.3

@@ -50,7 +50,7 @@ jobs:
       - name: Clone repository
         run: |
           cd ~
-          git clone -b dev/adreno-main https://github.com/lfdevs/mesa-for-android-container.git
+          git clone -b turnip-main https://github.com/lfdevs/mesa-for-android-container.git
 
       - name: Set release name suffix
         shell: bash

@@ -2060,3 +2060,41 @@ index 0000000..e4b80b1
 +}
 -- 
 2.47.3
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: root <root@localhost.localdomain>
+Date: Sat, 16 May 2026 11:20:36 +0000
+Subject: [PATCH] fixup! freedreno/tu: add KGSL DRM kernel backend support
+
+Override KNL backend after loading via standard kgsl loader.
+
+Signed-off-by: root <root@localhost.localdomain>
+---
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+index e4b80b1..a3c9f2e 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -1923,12 +1923,17 @@ tu_knl_kgsl_drm_load(struct tu_instance *instance,
+       return vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                        "failed to open device %s", path);
+    }
+ 
++   /* Standard kgsl loader will initialize the physical device,
++    * but it will set instance->knl = &kgsl_knl_funcs.
++    */
+    VkResult result = tu_knl_kgsl_load(instance, kgsl_fd, out);
+    if (result != VK_SUCCESS) {
+       close(kgsl_fd);
+       return result;
+    }
+-   struct tu_physical_device * device = *out;
++   /* Override with our DRM-aware backend */
++   instance->knl = &kgsl_drm_knl_funcs;
++
++   struct tu_physical_device *device = *out;
+    device->msm_major_version = version->version_major;
+    device->msm_minor_version = version->version_minor;
+-- 
+2.47.3

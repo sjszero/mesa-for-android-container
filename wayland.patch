@@ -1807,7 +1807,7 @@ index 0000000..e4b80b1
 +static int
 +kgsl_device_get_gpu_timestamp(struct tu_device *dev, uint64_t *ts)
 +{
-+   UNREACHABLE("");
++   *ts = 0;
 +   return 0;
 +}
 +

@@ -2095,18 +2095,10 @@ From: Turnip KGSL DRM Implementation <fix@example.com>
 Date: Mon, 25 May 2026 16:00:00 +0000
 Subject: [PATCH] turnip: implement VK_EXT_physical_device_drm for KGSL DRM fake backend
 
-Properly fill and return DRM device properties so that Vulkan loader
-and compositors (wlroots, vkmark) can correctly match the physical device
-to DRM nodes. This eliminates the need to bypass the extension and fixes
-use-after-free crashes.
+Properly fill and return DRM device properties so that loader and compositors
+can match the physical device to DRM nodes.
 
 Signed-off-by: Your Name <your@email>
----
- src/freedreno/vulkan/tu_device.c         |  2 ++
- src/freedreno/vulkan/tu_knl.h            |  6 ++++
- src/freedreno/vulkan/tu_knl_kgsl_drm.c   | 39 +++++++++++++++++++++---
- src/freedreno/vulkan/tu_physical_device.c| 25 +++++++++++++++
- 4 files changed, 68 insertions(+), 4 deletions(-)
 
 diff --git a/src/freedreno/vulkan/tu_device.c b/src/freedreno/vulkan/tu_device.c
 index abcdefg..1234567 100644
@@ -2116,32 +2108,30 @@ index abcdefg..1234567 100644
     VkResult result;
     struct tu_device *device;
  
-+   /* Defensive check: physicalDevice must not be NULL */
-+   if (!physicalDevice) return VK_ERROR_INITIALIZATION_FAILED;
++   if (!physicalDevice)
++      return VK_ERROR_INITIALIZATION_FAILED;
     struct tu_physical_device *pdevice = tu_physical_device_from_handle(physicalDevice);
     struct tu_instance *instance = pdevice->instance;
  
 diff --git a/src/freedreno/vulkan/tu_knl.h b/src/freedreno/vulkan/tu_knl.h
-index 4c2bf6a..e5d61a4 100644
+index e5d61a4..f6b72b5 100644
 --- a/src/freedreno/vulkan/tu_knl.h
 +++ b/src/freedreno/vulkan/tu_knl.h
-@@ -261,6 +261,12 @@ VkResult tu_sparse_vma_init(struct tu_device *dev,
+@@ -262,6 +262,10 @@ VkResult tu_sparse_vma_init(struct tu_device *dev,
  void tu_sparse_vma_finish(struct tu_device *device,
                            struct tu_sparse_vma *vma);
  
 +#ifdef TU_HAS_KGSL_DRM
-+/* Helper to get DRM properties for KGSL fake device */
 +VkResult tu_knl_kgsl_drm_get_drm_properties(struct tu_physical_device *pdevice,
 +                                            VkPhysicalDeviceDRMPropertiesEXT *props);
 +#endif
-+
- VkResult tu_knl_kgsl_load(struct tu_instance *instance, int fd);
- 
- struct _drmVersion;
-diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.c b/src/freedreno/vulkan/tu_knl_kgsl_drm.c
+ VkResult
+ tu_knl_kgsl_drm_load(struct tu_instance *instance,
+                      struct _drmVersion *version,
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 index e4b80b1..abc1234 100644
---- a/src/freedreno/vulkan/tu_knl_kgsl_drm.c
-+++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.c
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 @@ -1790,9 +1790,9 @@ VkResult tu_knl_kgsl_load(struct tu_instance *instance, int fd,
  
     device->instance = instance;
@@ -2167,7 +2157,7 @@ index e4b80b1..abc1234 100644
 +   device->local_major = 226;
 +   device->local_minor = 128;    /* renderD128 */
 +   if (device->master_fd == -1) {
-+      device->master_fd = dup(fd);  /* reuse kgsl fd as master fd */
++      device->master_fd = dup(fd);
 +   }
 +   if (device->local_fd == -1) {
 +      device->local_fd = dup(fd);
@@ -2219,10 +2209,8 @@ index 1234567..abcdefg 100644
 +{
 +   if (pdevice->instance->knl && pdevice->instance->knl->name &&
 +       strcmp(pdevice->instance->knl->name, "kgsl_drm") == 0) {
-+      /* Use KGSL DRM fake backend to fill properties */
 +      return tu_knl_kgsl_drm_get_drm_properties(pdevice, props);
 +   }
-+   /* Fallback to original DRM query (for msm, etc.) */
 +   return VK_ERROR_FEATURE_NOT_PRESENT;
 +}
 +#endif
@@ -2232,8 +2220,11 @@ index 1234567..abcdefg 100644
 +   VkPhysicalDeviceDRMPropertiesEXT *pDRMProperties)
 +{
 +   struct tu_physical_device *pdevice = tu_physical_device_from_handle(physicalDevice);
-+   /* Try to get from custom backend, otherwise leave as zero (unsupported) */
-+   tu_physical_device_get_drm_properties(pdevice, pDRMProperties);
++#ifdef TU_HAS_KGSL_DRM
++   if (tu_physical_device_get_drm_properties(pdevice, pDRMProperties) == VK_SUCCESS)
++      return;
++#endif
++   /* Default: zero-initialized (meaning the extension is not supported) */
 +}
 +
  void tu_GetPhysicalDeviceDeviceProperties2EXT(

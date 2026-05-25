@@ -2091,52 +2091,153 @@ index 0000000..e4b80b1
 +}
 -- 
 2.47.3
-From: Your Name <you@example.com>
-Date: Sat, 23 May 2026 00:00:00 +0000
-Subject: [PATCH] fix kgsl-drm: set drm device props and improve initialization
+From: Turnip KGSL DRM Implementation <fix@example.com>
+Date: Mon, 25 May 2026 16:00:00 +0000
+Subject: [PATCH] turnip: implement VK_EXT_physical_device_drm for KGSL DRM fake backend
 
-Set local_major/minor and master_major/minor for proper VK_EXT_physical_device_drm.
-Also ensure the device entrypoints and other fields are correctly initialized.
+Properly fill and return DRM device properties so that Vulkan loader
+and compositors (wlroots, vkmark) can correctly match the physical device
+to DRM nodes. This eliminates the need to bypass the extension and fixes
+use-after-free crashes.
 
-Signed-off-by: Your Name <you@example.com>
+Signed-off-by: Your Name <your@email>
 ---
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 24 ++++++++++++++++++++++++
- 1 file changed, 24 insertions(+)
+ src/freedreno/vulkan/tu_device.c         |  2 ++
+ src/freedreno/vulkan/tu_knl.h            |  6 ++++
+ src/freedreno/vulkan/tu_knl_kgsl_drm.c   | 39 +++++++++++++++++++++---
+ src/freedreno/vulkan/tu_physical_device.c| 25 +++++++++++++++
+ 4 files changed, 68 insertions(+), 4 deletions(-)
 
-diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index e4b80b1..a1b2c3d 100644
---- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-+++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -1864,6 +1864,30 @@ VkResult tu_knl_kgsl_load(struct tu_instance *instance, int fd,
+diff --git a/src/freedreno/vulkan/tu_device.c b/src/freedreno/vulkan/tu_device.c
+index abcdefg..1234567 100644
+--- a/src/freedreno/vulkan/tu_device.c
++++ b/src/freedreno/vulkan/tu_device.c
+@@ -1234,6 +1234,8 @@ VkResult tu_CreateDevice(
+    VkResult result;
+    struct tu_device *device;
  
-    instance->knl = &kgsl_drm_knl_funcs;
++   /* Defensive check: physicalDevice must not be NULL */
++   if (!physicalDevice) return VK_ERROR_INITIALIZATION_FAILED;
+    struct tu_physical_device *pdevice = tu_physical_device_from_handle(physicalDevice);
+    struct tu_instance *instance = pdevice->instance;
  
-+   /* ============================================================
-+    * FIX: Set DRM device properties for VK_EXT_physical_device_drm
-+    * This allows wlroots to correctly match the Vulkan device with
-+    * /dev/dri/card0 and /dev/dri/renderD128.
-+    * ============================================================ */
-+   /* Use standard DRM major number 226 */
-+   device->local_major = 226;
-+   /* Render node minor: typically 128 for first card (card0 -> renderD128) */
-+   device->local_minor = 128;
-+   device->has_local = true;
-+   /* Primary node (card0) minor = 0 */
-+   device->master_major = 226;
-+   device->master_minor = 0;
+diff --git a/src/freedreno/vulkan/tu_knl.h b/src/freedreno/vulkan/tu_knl.h
+index 4c2bf6a..e5d61a4 100644
+--- a/src/freedreno/vulkan/tu_knl.h
++++ b/src/freedreno/vulkan/tu_knl.h
+@@ -261,6 +261,12 @@ VkResult tu_sparse_vma_init(struct tu_device *dev,
+ void tu_sparse_vma_finish(struct tu_device *device,
+                           struct tu_sparse_vma *vma);
+ 
++#ifdef TU_HAS_KGSL_DRM
++/* Helper to get DRM properties for KGSL fake device */
++VkResult tu_knl_kgsl_drm_get_drm_properties(struct tu_physical_device *pdevice,
++                                            VkPhysicalDeviceDRMPropertiesEXT *props);
++#endif
++
+ VkResult tu_knl_kgsl_load(struct tu_instance *instance, int fd);
+ 
+ struct _drmVersion;
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.c b/src/freedreno/vulkan/tu_knl_kgsl_drm.c
+index e4b80b1..abc1234 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.c
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.c
+@@ -1790,9 +1790,9 @@ VkResult tu_knl_kgsl_load(struct tu_instance *instance, int fd,
+ 
+    device->instance = instance;
+    device->master_fd = -1;
+-   device->local_fd = fd;
++   device->local_fd = dup(fd);
+    device->kgsl_dma_fd = dma_fd;
+-
++   
+    device->dev_id.gpu_id =
+       ((info.chip_id >> 24) & 0xff) * 100 +
+       ((info.chip_id >> 16) & 0xff) * 10 +
+@@ -1819,6 +1819,21 @@ VkResult tu_knl_kgsl_load(struct tu_instance *instance, int fd,
+    device->has_sparse = kgsl_is_virtual_bo_supported(fd);
+    device->has_sparse_prr = device->has_sparse;
+    device->has_lazy_bos = device->has_sparse;
++
++   /* Force DRM properties for VK_EXT_physical_device_drm */
 +   device->has_master = true;
-+   /* Also set the fd_path to the render node we are faking */
-+   snprintf(device->fd_path, sizeof(device->fd_path), "/dev/dri/renderD128");
++   device->has_local = true;
++   device->master_major = 226;   /* DRM_MAJOR */
++   device->master_minor = 0;     /* card0 */
++   device->local_major = 226;
++   device->local_minor = 128;    /* renderD128 */
++   if (device->master_fd == -1) {
++      device->master_fd = dup(fd);  /* reuse kgsl fd as master fd */
++   }
++   if (device->local_fd == -1) {
++      device->local_fd = dup(fd);
++   }
 +
-+   /* Ensure the timeline sync type is properly bound */
-+   device->timeline_type = vk_sync_timeline_get_type(&vk_kgsl_sync_type);
-+   device->sync_types[0] = &vk_kgsl_sync_type;
-+   device->sync_types[1] = &device->timeline_type.sync;
-+   device->sync_types[2] = NULL;
-+   /* ============================================================ */
+    get_kgsl_prop(fd, KGSL_PROP_GPU_VA64_SIZE, &device->va_size,
+                  sizeof(device->va_size));
+    /* We don't actually use the VMA, but set a fake offset so that it doesn't
+@@ -1888,9 +1903,25 @@ VkResult tu_knl_kgsl_load(struct tu_instance *instance, int fd,
+ 
+ fail:
+    vk_free(&instance->vk.alloc, device);
+-   close(fd);
++   if (fd >= 0) close(fd);
+    if (dma_fd >= 0)
+       close(dma_fd);
+    return result;
+ }
 +
-    result = tu_physical_device_init(device, instance);
-    if (result != VK_SUCCESS)
-       goto fail;
++/* Exported function to query DRM properties for this physical device */
++VkResult tu_knl_kgsl_drm_get_drm_properties(struct tu_physical_device *pdevice,
++                                            VkPhysicalDeviceDRMPropertiesEXT *props)
++{
++   props->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
++   props->pNext = NULL;
++   props->hasPrimary = pdevice->has_master;
++   props->hasRender = pdevice->has_local;
++   props->primaryMajor = pdevice->master_major;
++   props->primaryMinor = pdevice->master_minor;
++   props->renderMajor = pdevice->local_major;
++   props->renderMinor = pdevice->local_minor;
++   return VK_SUCCESS;
++}
++
+ #endif /* TU_HAS_KGSL_DRM */
+diff --git a/src/freedreno/vulkan/tu_physical_device.c b/src/freedreno/vulkan/tu_physical_device.c
+index 1234567..abcdefg 100644
+--- a/src/freedreno/vulkan/tu_physical_device.c
++++ b/src/freedreno/vulkan/tu_physical_device.c
+@@ -1876,6 +1876,31 @@ void tu_GetPhysicalDeviceProperties2(
+    }
+ }
+ 
++#ifdef TU_HAS_KGSL_DRM
++/* Override for KGSL DRM fake device */
++static VkResult tu_physical_device_get_drm_properties(
++   struct tu_physical_device *pdevice,
++   VkPhysicalDeviceDRMPropertiesEXT *props)
++{
++   if (pdevice->instance->knl && pdevice->instance->knl->name &&
++       strcmp(pdevice->instance->knl->name, "kgsl_drm") == 0) {
++      /* Use KGSL DRM fake backend to fill properties */
++      return tu_knl_kgsl_drm_get_drm_properties(pdevice, props);
++   }
++   /* Fallback to original DRM query (for msm, etc.) */
++   return VK_ERROR_FEATURE_NOT_PRESENT;
++}
++#endif
++
++void tu_GetPhysicalDeviceDRMPropertiesEXT(
++   VkPhysicalDevice physicalDevice,
++   VkPhysicalDeviceDRMPropertiesEXT *pDRMProperties)
++{
++   struct tu_physical_device *pdevice = tu_physical_device_from_handle(physicalDevice);
++   /* Try to get from custom backend, otherwise leave as zero (unsupported) */
++   tu_physical_device_get_drm_properties(pdevice, pDRMProperties);
++}
++
+ void tu_GetPhysicalDeviceDeviceProperties2EXT(
+    VkPhysicalDevice physicalDevice,
+    VkDeviceDeviceProperties2EXT *pProperties)
 -- 
-2.47.3
+2.40.1

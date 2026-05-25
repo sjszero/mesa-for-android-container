@@ -125,7 +125,7 @@ new file mode 100644
 index 0000000..e4b80b1
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1969 @@
+@@ -0,0 +1,1963 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -1903,18 +1903,12 @@ index 0000000..e4b80b1
 +                       "failed to open device %s", path);
 +   }
 +
-+   /* Standard kgsl loader will initialize the physical device,
-+    * but it will set instance->knl = &kgsl_knl_funcs.
-+    */
 +   VkResult result = tu_knl_kgsl_load(instance, kgsl_fd, out);
 +   if (result != VK_SUCCESS) {
 +      close(kgsl_fd);
 +      return result;
 +   }
-+   /* Override with our DRM-aware backend */
-+   instance->knl = &kgsl_drm_knl_funcs;
-+
-+   struct tu_physical_device *device = *out;
++   struct tu_physical_device * device = *out;
 +   device->msm_major_version = version->version_major;
 +   device->msm_minor_version = version->version_minor;
 +
@@ -2095,5 +2089,54 @@ index 0000000..e4b80b1
 +      close(dma_fd);
 +   return result;
 +}
+-- 
+2.47.3
+From: Your Name <you@example.com>
+Date: Sat, 23 May 2026 00:00:00 +0000
+Subject: [PATCH] fix kgsl-drm: set drm device props and improve initialization
+
+Set local_major/minor and master_major/minor for proper VK_EXT_physical_device_drm.
+Also ensure the device entrypoints and other fields are correctly initialized.
+
+Signed-off-by: Your Name <you@example.com>
+---
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+index e4b80b1..a1b2c3d 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
+@@ -1864,6 +1864,30 @@ VkResult tu_knl_kgsl_load(struct tu_instance *instance, int fd,
+ 
+    instance->knl = &kgsl_drm_knl_funcs;
+ 
++   /* ============================================================
++    * FIX: Set DRM device properties for VK_EXT_physical_device_drm
++    * This allows wlroots to correctly match the Vulkan device with
++    * /dev/dri/card0 and /dev/dri/renderD128.
++    * ============================================================ */
++   /* Use standard DRM major number 226 */
++   device->local_major = 226;
++   /* Render node minor: typically 128 for first card (card0 -> renderD128) */
++   device->local_minor = 128;
++   device->has_local = true;
++   /* Primary node (card0) minor = 0 */
++   device->master_major = 226;
++   device->master_minor = 0;
++   device->has_master = true;
++   /* Also set the fd_path to the render node we are faking */
++   snprintf(device->fd_path, sizeof(device->fd_path), "/dev/dri/renderD128");
++
++   /* Ensure the timeline sync type is properly bound */
++   device->timeline_type = vk_sync_timeline_get_type(&vk_kgsl_sync_type);
++   device->sync_types[0] = &vk_kgsl_sync_type;
++   device->sync_types[1] = &device->timeline_type.sync;
++   device->sync_types[2] = NULL;
++   /* ============================================================ */
++
+    result = tu_physical_device_init(device, instance);
+    if (result != VK_SUCCESS)
+       goto fail;
 -- 
 2.47.3

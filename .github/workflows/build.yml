@@ -61,7 +61,7 @@ jobs:
           wget https://raw.githubusercontent.com/sjszero/mesa-for-android-container/mesa-test/wayland.patch
           wget https://raw.githubusercontent.com/sjszero/mesa-for-android-container/mesa-test/wayland-fix.patch
           patch -p1 < wayland.patch
-          patch -p1 < wayland-fix.patch
+          patch -p1 --force < wayland-fix.patch
           
       - name: Build Mesa
         shell: bash

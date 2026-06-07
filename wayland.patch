@@ -2096,53 +2096,48 @@ From: Vulkan Dev <vulkan@dev>
 Date: Sun, 7 Jun 2026 12:00:00 +0000
 Subject: [PATCH 2/2] freedreno/tu: fix kgsl-drm backend crashes
 
-- Implement kgsl_device_get_gpu_timestamp() to avoid UNREACHABLE
-- Initialize kgsl_profiling_mutex in device init
-- Set proper va_start/va_size to avoid zero-sized address space
-- Add sanity checks for kgsl_dma_fd and ioctl results
+- Implement kgsl_device_get_gpu_timestamp() properly
+- Initialize kgsl_profiling_mutex, submit_mutex, timeline_cond
 - Correct kernel driver name detection for kgsl-drm path
+- Add sanity checks for DMA heap/ION open failure
+- Set default va_size if query fails
 
 Signed-off-by: Vulkan Dev <vulkan@dev>
 ---
- src/freedreno/vulkan/tu_knl.cc          |  7 ++++---
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 39 ++++++++++++++++++++++++++++++++-
- 2 files changed, 42 insertions(+), 4 deletions(-)
+ src/freedreno/vulkan/tu_knl.cc          |  9 +++++----
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 38 ++++++++++++++++++++++++++++-----
+ 2 files changed, 38 insertions(+), 9 deletions(-)
 
 diff --git a/src/freedreno/vulkan/tu_knl.cc b/src/freedreno/vulkan/tu_knl.cc
-index de09300..e4f2a7b 100644
+index de09300..f8b1c2e 100644
 --- a/src/freedreno/vulkan/tu_knl.cc
 +++ b/src/freedreno/vulkan/tu_knl.cc
-@@ -422,8 +422,9 @@ tu_physical_device_try_create(struct vk_instance *vk_instance,
+@@ -422,10 +422,11 @@ tu_physical_device_try_create(struct vk_instance *vk_instance,
  #ifdef TU_HAS_VIRTIO
        result = tu_knl_drm_virtio_load(instance, fd, version, &device);
  #endif
 -   } else if (strcmp(version->name, "msm_drm") == 0) {
 -      if (TU_DEBUG(STARTUP))
+-         mesa_log(MESA_LOG_INFO, "TU_MOD", "select kgsl drm");
+-      result = tu_knl_kgsl_drm_load(instance, version, &device, "/dev/kgsl-3d0");
 +   } else if (strcmp(version->name, "msm_drm") == 0 ||
 +              strcmp(version->name, "kgsl") == 0) {
-+      if (TU_DEBUG(STARTUP) || true)
-          mesa_log(MESA_LOG_INFO, "TU_MOD", "select kgsl drm");
-       result = tu_knl_kgsl_drm_load(instance, version, &device, "/dev/kgsl-3d0");
++      mesa_logi("TU_MOD: selecting kgsl-drm backend for driver '%s'", version->name);
++      result = tu_knl_kgsl_drm_load(instance, version, &device,
++                                    "/dev/kgsl-3d0");
     } else {
-@@ -433,4 +434,4 @@ tu_physical_device_try_create(struct vk_instance *vk_instance,
-    }
- 
-    return result;
--}
-\ No newline at end of file
-+}
+       result = vk_startup_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
+                                  "device %s (%s) is not compatible with turnip",
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index e4b80b1..ab5c3d8 100644
+index e4b80b1..da78c3f 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -1424,11 +1424,25 @@ kgsl_device_init(struct tu_device *dev)
+@@ -1424,11 +1424,19 @@ kgsl_device_init(struct tu_device *dev)
  {
     dev->fd = dev->physical_device->local_fd;
 +
-+   /* Initialize mutex used in kgsl_queue_submit */
++   /* Initialize mutexes used in kgsl_queue_submit and syncobj wait */
 +   mtx_init(&dev->kgsl_profiling_mutex, mtx_plain);
-+
-+   /* Initialize submit mutex and condition variable used by syncobj wait */
 +   mtx_init(&dev->submit_mutex, mtx_plain);
 +   cnd_init(&dev->timeline_cond);
 +
@@ -2161,16 +2156,14 @@ index e4b80b1..ab5c3d8 100644
  kgsl_device_finish(struct tu_device *dev)
  {
     /* No-op */
-@@ -1436,9 +1450,24 @@ kgsl_device_finish(struct tu_device *dev)
+@@ -1436,9 +1444,20 @@ kgsl_device_finish(struct tu_device *dev)
  
  static int
  kgsl_device_get_gpu_timestamp(struct tu_device *dev, uint64_t *ts)
  {
 -   UNREACHABLE("");
 -   return 0;
-+   /* Attempt to read a GPU timestamp using KGSL performance counter.
-+    * Not all kernels expose this, but we return a dummy value to avoid crash.
-+    */
++   /* Attempt to read a GPU timestamp using KGSL performance counter */
 +   struct kgsl_perfcounter_read_group perf = {
 +      .groupid = KGSL_PERFCOUNTER_GROUP_ALWAYSON,
 +      .countable = 0,
@@ -2180,31 +2173,29 @@ index e4b80b1..ab5c3d8 100644
 +      .count = 1,
 +   };
 +   int ret = safe_ioctl(dev->fd, IOCTL_KGSL_PERFCOUNTER_READ, &req);
-+   if (ret == 0) {
++   if (ret == 0)
 +      *ts = perf.value;
-+   } else {
++   else
 +      *ts = 0;
-+   }
 +   return ret;
  }
  
  static int
-@@ -1893,6 +1922,7 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
+@@ -1893,6 +1912,15 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
     device->va_start = 0x100000000;
  
  
-+   /* preemption is always supported on kgsl */
-+   device->has_preemption = true;
++   /* If KGSL_PROP_GPU_VA64_SIZE failed, set a reasonable default (256TB) */
++   if (device->va_size == 0) {
++      mesa_logw("KGSL_PROP_GPU_VA64_SIZE not supported, using default 256TB");
++      device->va_size = 1ULL << 48;
++   }
++   /* Ensure va_start is within va_size */
++   if (device->va_start >= device->va_size)
++      device->va_start = device->va_size >> 1;
 +
-    /* KGSL doesn't allow writing the perf counter selector as the expectation is to use the uAPI provided for this. */
-    device->is_perf_cntr_selectable = false;
+    /* preemption is always supported on kgsl */
+    device->has_preemption = true;
  
-@@ -1932,4 +1962,4 @@ fail:
-    if (dma_fd >= 0)
-       close(dma_fd);
-    return result;
--}
-\ No newline at end of file
-+}
 -- 
 2.47.3

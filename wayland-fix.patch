@@ -1,108 +1,31 @@
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index 42c38427cec..b2e7f9a1c5d 100644
+index f3d8a0b2e6c..b9e4c2d5f8a 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -339,6 +339,14 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
-       .shared_fd = os_dupfd_cloexec(fd),
-    };
- 
-+   struct stat st;
-+   if (fstat(fd, &st) == 0) {
-+      /* Use the inode number as the unique ID, but set the MSB to avoid
-+       * collisions with 32-bit KGSL handles (which are used for native BOs).
-+       */
-+      bo->unique_id = st.st_ino | (1ULL << 63);
-+   }
-+
-    tu_dump_bo_init(dev, bo);
- 
-    *out_bo = bo;
-@@ -1268,7 +1297,7 @@ kgsl_queue_submit(struct tu_queue *queue, void *_submit,
-    uint64_t start_ts = tu_perfetto_begin_submit();
- #endif
- 
--   if (submit->commands.size == 0) {
-+   if (submit->commands.size == 0 && submit->bind_cmds.size == 0) {
-       /* This handles the case where we have a wait and no commands to submit.
-        * It is necessary to handle this case separately as the kernel will not
-        * advance the GPU timeline if a submit with no commands is made, even
-@@ -1767,6 +1796,8 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
-       device->ubwc_config.macrotile_mode = FDL_MACROTILE_4_CHANNEL;
-       break;
-    case KGSL_UBWC_4_0:
-+   case KGSL_UBWC_5_0:
-+   case KGSL_UBWC_6_0:
-       device->ubwc_config.bank_swizzle_levels = 0x6;
-       device->ubwc_config.macrotile_mode = FDL_MACROTILE_8_CHANNEL;
-       break;
-diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index b2e7f9a1c5d..f3d8a0b2e6c 100644
---- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-+++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -576,16 +576,63 @@ kgsl_is_memory_type_supported(int fd, uint32_t flags)
- static bool
- kgsl_is_virtual_bo_supported(int fd)
- {
--   struct kgsl_gpuobj_alloc req_alloc = {
--      .size = 0x1000,
-+   bool supported = false;
-+   struct kgsl_gpuobj_alloc req_alloc_parent = {
-+      .size = 0x2000,
-       .flags = KGSL_MEMFLAGS_VBO,
-    };
-+   struct kgsl_gpumem_alloc_id req_alloc_child = {
-+      .size = 0x1000,
-+   };
-+   struct kgsl_gpumem_bind_range req_range;
-+   struct kgsl_gpumem_bind_ranges req_ranges;
-+   struct kgsl_gpumem_free_id req_free_child;
-+   struct kgsl_gpuobj_free req_free_parent;
-+   int ret;
- 
--   int ret = safe_ioctl(fd, IOCTL_KGSL_GPUOBJ_ALLOC, &req_alloc);
-+   /* Create a parent virtual BO */
-+   ret = safe_ioctl(fd, IOCTL_KGSL_GPUOBJ_ALLOC, &req_alloc_parent);
-    if (ret) {
-       return false;
+@@ -92,7 +92,7 @@ bo_init_new_dmaheap(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
+                        "DMA_HEAP_IOCTL_ALLOC failed (%s)", strerror(errno));
     }
  
-+   /* Create a child real BO */
-+   ret = safe_ioctl(fd, IOCTL_KGSL_GPUMEM_ALLOC_ID, &req_alloc_child);
-+   if (ret)
-+      goto free_parent;
-+
-+   /* Prepare bind range */
-+   req_range.child_offset = 0;
-+   req_range.target_offset = 0;
-+   req_range.length = 0x1000;
-+   req_range.child_id = req_alloc_child.id;
-+   req_range.op = KGSL_GPUMEM_RANGE_OP_BIND;
-+
-+   req_ranges.ranges = (uint64_t)(uintptr_t)&req_range;
-+   req_ranges.ranges_nents = 1;
-+   req_ranges.ranges_size = sizeof(req_range);
-+   req_ranges.id = req_alloc_parent.id;
-+   req_ranges.flags = 0;
-+
-+   /* Attempt to bind child into parent */
-+   ret = safe_ioctl(fd, IOCTL_KGSL_GPUMEM_BIND_RANGES, &req_ranges);
-+   if (ret)
-+      goto free_child;
-+
-+   supported = true;
-+
-+free_child:
-+   req_free_child.id = req_alloc_child.id;
-+   safe_ioctl(fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req_free_child);
-+free_parent:
-+   req_free_parent.id = req_alloc_parent.id;
-+   safe_ioctl(fd, IOCTL_KGSL_GPUOBJ_FREE, &req_free_parent);
-+
-+   return supported;
-+}
-+
-+/* Original simple version (kept for reference, but not used) */
-+#if 0
-    struct kgsl_gpuobj_free req_free = { .id = req_alloc.id };
-    safe_ioctl(fd, IOCTL_KGSL_GPUOBJ_FREE, &req_free);
+-   return tu_bo_init_dmabuf(dev, out_bo, -1, alloc.fd);
++   return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, alloc.fd);
+ }
  
+ static VkResult
+@@ -113,7 +113,7 @@ bo_init_new_ion(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
+                        "ION_IOC_NEW_ALLOC failed (%s)", strerror(errno));
+    }
+ 
+-   return tu_bo_init_dmabuf(dev, out_bo, -1, alloc.fd);
++   return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, alloc.fd);
+ }
+ 
+ static VkResult
+@@ -155,7 +155,7 @@ bo_init_new_ion_legacy(struct tu_device *dev, struct tu_bo **out_bo, uint64_t si
+                        "ION_IOC_FREE failed (%s)", strerror(errno));
+    }
+ 
+-   return tu_bo_init_dmabuf(dev, out_bo, -1, share.fd);
++   return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, share.fd);
+ }
+ 
+ static VkResult

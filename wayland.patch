@@ -2099,20 +2099,19 @@ Subject: [PATCH 2/2] freedreno/tu: fix kgsl-drm backend crashes
 - Implement kgsl_device_get_gpu_timestamp() properly
 - Initialize kgsl_profiling_mutex, submit_mutex, timeline_cond
 - Correct kernel driver name detection for kgsl-drm path
-- Add sanity checks for DMA heap/ION open failure
-- Set default va_size if query fails
+- Add sanity check for va_size default
 
 Signed-off-by: Vulkan Dev <vulkan@dev>
 ---
- src/freedreno/vulkan/tu_knl.cc          |  9 +++++----
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 38 ++++++++++++++++++++++++++++-----
- 2 files changed, 38 insertions(+), 9 deletions(-)
+ src/freedreno/vulkan/tu_knl.cc          |  7 +++++--
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 35 ++++++++++++++++++++++++++++++++---
+ 2 files changed, 37 insertions(+), 5 deletions(-)
 
 diff --git a/src/freedreno/vulkan/tu_knl.cc b/src/freedreno/vulkan/tu_knl.cc
 index de09300..f8b1c2e 100644
 --- a/src/freedreno/vulkan/tu_knl.cc
 +++ b/src/freedreno/vulkan/tu_knl.cc
-@@ -422,10 +422,11 @@ tu_physical_device_try_create(struct vk_instance *vk_instance,
+@@ -422,10 +422,13 @@ tu_physical_device_try_create(struct vk_instance *vk_instance,
  #ifdef TU_HAS_VIRTIO
        result = tu_knl_drm_virtio_load(instance, fd, version, &device);
  #endif
@@ -2122,17 +2121,19 @@ index de09300..f8b1c2e 100644
 -      result = tu_knl_kgsl_drm_load(instance, version, &device, "/dev/kgsl-3d0");
 +   } else if (strcmp(version->name, "msm_drm") == 0 ||
 +              strcmp(version->name, "kgsl") == 0) {
-+      mesa_logi("TU_MOD: selecting kgsl-drm backend for driver '%s'", version->name);
++      /* Accept both msm_drm and kgsl as trigger for kgsl-drm backend */
++      if (TU_DEBUG(STARTUP) || true)
++         mesa_logi("TU_MOD: selecting kgsl-drm backend for driver '%s'", version->name);
 +      result = tu_knl_kgsl_drm_load(instance, version, &device,
 +                                    "/dev/kgsl-3d0");
     } else {
        result = vk_startup_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
                                   "device %s (%s) is not compatible with turnip",
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index e4b80b1..da78c3f 100644
+index e4b80b1..6c5f2a1 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -1424,11 +1424,19 @@ kgsl_device_init(struct tu_device *dev)
+@@ -1424,7 +1424,14 @@ kgsl_device_init(struct tu_device *dev)
  {
     dev->fd = dev->physical_device->local_fd;
 +
@@ -2146,17 +2147,7 @@ index e4b80b1..da78c3f 100644
  
  static void
  kgsl_device_finish(struct tu_device *dev)
-+{
-+   mtx_destroy(&dev->kgsl_profiling_mutex);
-+   mtx_destroy(&dev->submit_mutex);
-+   cnd_destroy(&dev->timeline_cond);
-+}
-+
-+static void
- kgsl_device_finish(struct tu_device *dev)
- {
-    /* No-op */
-@@ -1436,9 +1444,20 @@ kgsl_device_finish(struct tu_device *dev)
+@@ -1436,10 +1443,20 @@ kgsl_device_finish(struct tu_device *dev)
  
  static int
  kgsl_device_get_gpu_timestamp(struct tu_device *dev, uint64_t *ts)
@@ -2181,7 +2172,7 @@ index e4b80b1..da78c3f 100644
  }
  
  static int
-@@ -1893,6 +1912,15 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
+@@ -1893,6 +1910,18 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
     device->va_start = 0x100000000;
  
  
@@ -2191,8 +2182,11 @@ index e4b80b1..da78c3f 100644
 +      device->va_size = 1ULL << 48;
 +   }
 +   /* Ensure va_start is within va_size */
-+   if (device->va_start >= device->va_size)
++   if (device->va_start >= device->va_size) {
++      mesa_logw("va_start (%llx) >= va_size (%llx), adjusting va_start to half",
++                (unsigned long long)device->va_start, (unsigned long long)device->va_size);
 +      device->va_start = device->va_size >> 1;
++   }
 +
     /* preemption is always supported on kgsl */
     device->has_preemption = true;

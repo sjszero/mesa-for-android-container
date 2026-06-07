@@ -1,13 +1,3 @@
-From: Turnip Developer <turnip@example.com>
-Date: 2026-06-07
-Subject: [PATCH] tu/knl: fix multiple hidden issues in KGSL backend
-
-Fix uninitialized dynarray, wrong size passed to bo_init_dmabuf,
-resource leak, integer overflow, missing condition variable broadcast,
-and other stability issues.
-
-Signed-off-by: Turnip Developer <turnip@example.com>
-
 diff --git a/tu_knl.cc b/tu_knl.cc
 index 1234567..abcdefg 100644
 --- a/tu_knl.cc

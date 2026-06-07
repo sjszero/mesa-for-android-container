@@ -1,231 +1,195 @@
-From: Turnip Developer <turnip@freedesktop.org>
-Date: Sun, 7 Jun 2026 12:00:00 +0000
-Subject: [PATCH] turnip: fix kernel abstraction layer design flaws
-
-Fix sparse VMA abstraction leak, busy-loop in kgsl profiling,
-timestamp wrap-around risk, BO map dangling pointer, and
-unify error handling.
-
-Signed-off-by: Turnip Developer <turnip@freedesktop.org>
-
- src/freedreno/vulkan/tu_knl.h            | 15 +++++-----
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc  | 43 ++++++++++++++++++--------------
- src/freedreno/vulkan/tu_device.cc        | 20 ++++++++++++++-
- 3 files changed, 52 insertions(+), 26 deletions(-)
-
-diff --git a/src/freedreno/vulkan/tu_knl.h b/src/freedreno/vulkan/tu_knl.h
-index 1234567..abcdef0 100644
---- a/src/freedreno/vulkan/tu_knl.h
-+++ b/src/freedreno/vulkan/tu_knl.h
-@@ -120,13 +120,9 @@ enum tu_sparse_vma_flags {
- struct tu_sparse_vma {
-    enum tu_sparse_vma_flags flags;
- 
--   union {
--      struct {
--         uint64_t iova;
--         uint64_t size;
--         bool backs_lazy_bo;
--      } msm;
--      struct {
--         struct tu_bo *virtual_bo;
--      } kgsl;
--   };
-+   /* Opaque private data for backend (MSM or KGSL) */
-+   void *priv;
- };
- 
- struct tu_knl {
-@@ -218,6 +214,7 @@ struct tu_knl {
-    VkResult (*sparse_vma_init)(struct tu_device *dev,
-                                struct vk_object_base *base,
-                                struct tu_sparse_vma *out_vma,
-+                               void **out_priv,
-                                uint64_t *out_iova,
-                                enum tu_sparse_vma_flags flags,
-                                uint64_t size, uint64_t client_iova);
-@@ -257,7 +254,7 @@ tu_bo_init_dmabuf(struct tu_device *dev,
- int
- tu_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo);
- 
--void
-+VkResult
- tu_bo_finish(struct tu_device *dev, struct tu_bo *bo);
- 
- VkResult
-diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index 456789b..cdef012 100644
---- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-+++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -402,7 +402,7 @@ kgsl_bo_allow_dump(struct tu_device *dev, struct tu_bo *bo)
- static void
- kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
+diff --git a/tu_knl_kgsl_drm.cc b/tu_knl_kgsl_drm.cc
+index 0000000..1111111 100644
+--- a/tu_knl_kgsl_drm.cc
++++ b/tu_knl_kgsl_drm.cc
+@@ -72,25 +72,37 @@ static VkResult
+ bo_init_new_dmaheap(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
+                 enum tu_bo_alloc_flags flags)
  {
--   if (!p_atomic_dec_zero(&bo->refcnt))
-+   if (!p_atomic_dec_zero(&bo->refcnt))
-       return;
- 
-+   /* Clear bo_map entry to prevent use-after-free */
-+   util_sparse_array_set(&dev->bo_map, bo->gem_handle, NULL);
-+
-    tu_debug_bos_del(dev, bo);
-    tu_dump_bo_del(dev, bo);
- 
-@@ -414,7 +417,6 @@ kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
-    if (bo->shared_fd != -1)
-       close(bo->shared_fd);
- 
--   TU_RMV(bo_destroy, dev, bo);
-    struct kgsl_gpumem_free_id req = { .id = bo->gem_handle };
+    struct dma_heap_allocation_data alloc = {
+       .len = size,
+       .fd_flags = O_RDWR | O_CLOEXEC,
+    };
++   int ret;
++   int fd = -1;
+
+-   int ret;
+    ret = safe_ioctl(dev->physical_device->kgsl_dma_fd, DMA_HEAP_IOCTL_ALLOC,
+                     &alloc);
 -
-    safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);
- }
- 
-@@ -422,8 +424,12 @@ kgsl_bo_finish(struct tu_device *dev, struct tu_bo *bo)
- static inline bool
- timestamp_cmp(uint32_t a, uint32_t b)
- {
--   return (int32_t)(a - b) >= 0;
-+   int32_t diff = (int32_t)(a - b);
-+   if (ABS(diff) > (1 << 30))
-+      mesa_logw("kgsl timestamp wrap-around risk: diff=%d", diff);
-+   return diff >= 0;
- }
-+/* end of timestamp helpers */
- 
- static uint32_t
- max_ts(uint32_t a, uint32_t b)
-@@ -524,10 +530,12 @@ kgsl_syncobj_wait_any(struct tu_device* device, struct kgsl_syncobj **syncobjs,
-    VkResult result = VK_TIMEOUT;
- 
-    struct u_vector poll_fds = { 0 };
-+   u_vector_init(&poll_fds, 4, sizeof(struct pollfd));
- 
-    uint32_t lowest_timestamp = 0;
--   if (convert_ts_to_fd || num_fds > 0)
--      u_vector_init(&poll_fds, 4, sizeof(struct pollfd));
-+   /* Note: poll_fds is always initialized now, but we only use it
-+    * if we actually have something to poll.
-+    */
- 
-    if (convert_ts_to_fd) {
-       kgsl_syncobj_foreach_state(syncobjs, KGSL_SYNCOBJ_STATE_TS) {
-@@ -548,11 +556,14 @@ kgsl_syncobj_wait_any(struct tu_device* device, struct kgsl_syncobj **syncobjs,
- 
-    if (num_fds) {
-       kgsl_syncobj_foreach_state(syncobjs, KGSL_SYNCOBJ_STATE_FD) {
--         struct pollfd *poll_fd = (struct pollfd *) u_vector_add(&poll_fds);
--         poll_fd->fd = sync->fd;
--         poll_fd->events = POLLIN;
-+         if (sync->fd >= 0) {
-+            struct pollfd *poll_fd = (struct pollfd *) u_vector_add(&poll_fds);
-+            poll_fd->fd = sync->fd;
-+            poll_fd->events = POLLIN;
-+         }
-       }
+    if (ret) {
+       return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                        "DMA_HEAP_IOCTL_ALLOC failed (%s)", strerror(errno));
     }
-+   /* There might be no FDs at all if all are TS from same queue */
- 
-    if (u_vector_length(&poll_fds) == 0) {
-       result = wait_timestamp_safe(device->fd, queue->msm_queue_id,
-@@ -568,11 +579,9 @@ kgsl_syncobj_wait_any(struct tu_device* device, struct kgsl_syncobj **syncobjs,
-          if (ret > 0) {
-             for (i = 0; i < fds_count; i++) {
-                if (fds[i].revents & (POLLERR | POLLNVAL)) {
--                  errno = EINVAL;
--                  ret = -1;
--                  break;
-+                  /* ignore bad FDs, continue waiting */
-+                  continue;
-                }
--            }
-             break;
-          } else if (ret == 0) {
-             errno = ETIME;
-@@ -588,10 +597,12 @@ kgsl_syncobj_wait_any(struct tu_device* device, struct kgsl_syncobj **syncobjs,
-       } else {
-          result = VK_SUCCESS;
-       }
-+      u_vector_finish(&poll_fds);
-    }
- 
--   u_vector_finish(&poll_fds);
-    return result;
+
+-   return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, alloc.fd);
++   fd = alloc.fd;
++   VkResult result = tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, fd);
++   /* tu_bo_init_dmabuf duplicates the fd, so we must close the original */
++   close(fd);
++   return result;
  }
-+/* end of kgsl_syncobj_wait_any */
-+
+
  static VkResult
- kgsl_syncobj_export(struct kgsl_syncobj *s, int *pFd)
+ bo_init_new_ion(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
+                 enum tu_bo_alloc_flags flags)
  {
-@@ -732,11 +743,7 @@ kgsl_queue_submit(struct tu_queue *queue, void *_submit,
-          profiling_buffer = (struct kgsl_cmdbatch_profiling_buffer *)
-                tu_suballoc_bo_map(bo);
-          memset(profiling_buffer, 0, sizeof(*profiling_buffer));
--         while (p_atomic_read(&profiling_buffer->gpu_ticks_queued) == 0);
--
--         struct kgsl_perfcounter_read_group perf = {
--            .groupid = KGSL_PERFCOUNTER_GROUP_ALWAYSON,
--            .countable = 0,
--            .value = 0
--         };
-+         /* Wait with small sleeps instead of busy-loop */
-+         for (int retry = 0; retry < 100; retry++) {
-+            if (p_atomic_read(&profiling_buffer->gpu_ticks_queued) != 0)
-+               break;
-+            usleep(1000); /* 1 ms */
-+         }
-+         if (p_atomic_read(&profiling_buffer->gpu_ticks_queued) == 0) {
-+            mesa_loge("kgsl: GPU timestamp not written for profiling");
-+         }
- 
-          struct kgsl_perfcounter_read req = {
-             .reads = &perf,
-@@ -744,7 +751,7 @@ kgsl_queue_submit(struct tu_queue *queue, void *_submit,
-          };
- 
-          ret = safe_ioctl(queue->device->fd, IOCTL_KGSL_PERFCOUNTER_READ, &req);
--         /* Older KGSL has some kind of garbage in upper 32 bits */
-+         /* Older KGSL has garbage in upper 32 bits */
-          uint64_t offseted_gpu_ts = perf.value & 0xffffffff;
- 
-          gpu_offset = tu_device_ticks_to_ns(
-diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
-index 789abcd..def0123 100644
---- a/src/freedreno/vulkan/tu_device.cc
-+++ b/src/freedreno/vulkan/tu_device.cc
-@@ -2778,6 +2778,20 @@ tu_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo)
-    return dev->instance->knl->bo_export_dmabuf(dev, bo);
+    struct ion_new_allocation_data alloc = {
+       .len = size,
+       .heap_id_mask = KGSL_ION_SYSTEM_HEAP_MASK,
+       .flags = 0,
+       .fd = -1,
+    };
++   int fd = -1;
++   VkResult result;
+
+-   int ret;
+-   ret = safe_ioctl(dev->physical_device->kgsl_dma_fd, ION_IOC_NEW_ALLOC, &alloc);
++   int ret = safe_ioctl(dev->physical_device->kgsl_dma_fd, ION_IOC_NEW_ALLOC, &alloc);
+    if (ret) {
+       return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                        "ION_IOC_NEW_ALLOC failed (%s)", strerror(errno));
+    }
+
+-   return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, alloc.fd);
++   fd = alloc.fd;
++   result = tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, fd);
++   close(fd);
++   return result;
  }
- 
-+/* Convert errno to VkResult and log */
-+static VkResult
-+errno_to_vk_result(struct tu_device *dev, const char *call_name)
-+{
-+   if (errno == ETIMEDOUT)
-+      return VK_TIMEOUT;
-+   if (errno == ENOMEM)
-+      return VK_ERROR_OUT_OF_HOST_MEMORY;
-+   if (errno == EINVAL)
-+      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
-+   vk_errorf(dev, VK_ERROR_UNKNOWN, "%s: %s", call_name, strerror(errno));
-+   return VK_ERROR_UNKNOWN;
-+}
+
+ static VkResult
+ bo_init_new_ion_legacy(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
+                        enum tu_bo_alloc_flags flags)
+ {
+    struct ion_allocation_data alloc = {
+       .len = size,
+       .align = 4096,
+       .heap_id_mask = KGSL_ION_SYSTEM_HEAP_MASK,
+       .flags = 0,
+       .handle = -1,
+    };
++   int fd = -1;
+
+    int ret;
+    ret = safe_ioctl(dev->physical_device->kgsl_dma_fd, ION_IOC_ALLOC, &alloc);
+    if (ret) {
+       return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                        "ION_IOC_ALLOC failed (%s)", strerror(errno));
+    }
+
+    struct ion_fd_data share = {
+       .handle = alloc.handle,
+       .fd = -1,
+    };
+
+    ret = safe_ioctl(dev->physical_device->kgsl_dma_fd, ION_IOC_SHARE, &share);
+    if (ret) {
++      /* Free the allocated handle before returning */
++      struct ion_handle_data free_handle = { .handle = alloc.handle };
++      safe_ioctl(dev->physical_device->kgsl_dma_fd, ION_IOC_FREE, &free_handle);
+       return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                        "ION_IOC_SHARE failed (%s)", strerror(errno));
+    }
+
+    struct ion_handle_data free = {
+       .handle = alloc.handle,
+    };
+    ret = safe_ioctl(dev->physical_device->kgsl_dma_fd, ION_IOC_FREE, &free);
+    if (ret) {
++      close(share.fd);
+       return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                        "ION_IOC_FREE failed (%s)", strerror(errno));
+    }
+
+-   return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, share.fd);
++   fd = share.fd;
++   VkResult result = tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, fd);
++   close(fd);
++   return result;
+ }
+
+ static VkResult
+ kgsl_bo_user_map(struct tu_device *dev, struct tu_bo *bo, uint64_t client_iova)
+@@ -178,6 +202,10 @@ kgsl_bo_init(struct tu_device *dev,
+        * fixed address, only imported memory, but on kgsl we can't sensibly
+        * implement it so just always reject it.
+        */
++      if (dev->physical_device->kgsl_dma_fd < 0) {
++         return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                          "No DMA heap or ION device available for shareable allocation");
++      }
+       if (client_iova) {
+          return vk_errorf(dev, VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS,
+                           "cannot allocate an exportable BO with a fixed address");
+@@ -186,18 +214,25 @@ kgsl_bo_init(struct tu_device *dev,
+       switch(dev->physical_device->kgsl_dma_type) {
+       case TU_KGSL_DMA_TYPE_DMAHEAP:
+          return bo_init_new_dmaheap(dev, out_bo, size, flags);
+       case TU_KGSL_DMA_TYPE_ION:
+          return bo_init_new_ion(dev, out_bo, size, flags);
+       case TU_KGSL_DMA_TYPE_ION_LEGACY:
+          return bo_init_new_ion_legacy(dev, out_bo, size, flags);
++      default:
++         return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                          "No supported DMA allocation method available");
+       }
+    }
+
+    struct kgsl_gpumem_alloc_id req = {
+       .size = size,
+    };
+
++   if (dev->physical_device->local_fd < 0) {
++      return vk_errorf(dev, VK_ERROR_INITIALIZATION_FAILED,
++                       "KGSL device not opened");
++   }
 +
- void
- tu_bo_finish(struct tu_device *dev, struct tu_bo *bo)
+    if (mem_property & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) {
+       if (mem_property & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
+          req.flags |= KGSL_MEMFLAGS_IOCOHERENT;
+@@ -475,6 +510,7 @@ kgsl_syncobj_destroy(struct kgsl_syncobj *s)
+ static struct kgsl_syncobj
+ kgsl_syncobj_dup(struct kgsl_syncobj *s)
  {
-@@ -2859,7 +2873,11 @@ tu_sparse_vma_init(struct tu_device *dev,
-    size = align64(size, os_page_size);
- 
-    out_vma->flags = flags;
--   return dev->instance->knl->sparse_vma_init(dev, base, out_vma, out_iova,
-+   /* Initialize priv to NULL for safety */
-+   out_vma->priv = NULL;
-+   return dev->instance->knl->sparse_vma_init(dev, base,
-+                                              out_vma,
-+                                              &out_vma->priv, out_iova,
-                                               flags, size, client_iova);
- }
- 
--- 
-2.45.0
++   /* Duplicate the fd if present, so the copy owns its own reference */
+    struct kgsl_syncobj dups = *s;
+    if (s->state == KGSL_SYNCOBJ_STATE_FD && s->fd >= 0) {
+       dups.fd = dup(s->fd);
+@@ -1062,6 +1098,11 @@ kgsl_queue_submit(struct tu_queue *queue, void *_submit,
+    kgsl_syncobj_destroy(&wait_sync);
+
+    if (ret) {
++      /* On submission failure, ensure we don't leak the profiling buffer */
++      if (profiling_buffer) {
++         mtx_lock(&queue->device->kgsl_profiling_mutex);
++         tu_suballoc_bo_free(&queue->device->kgsl_profiling_suballoc, &u_trace_submission_data->kgsl_timestamp_bo);
++         mtx_unlock(&queue->device->kgsl_profiling_mutex);
++      }
+       result = vk_device_set_lost(&queue->device->vk, "submit failed: %s\n",
+                                   strerror(errno));
+       goto fail_submit;
+@@ -1391,6 +1432,12 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
+    if (dma_fd >= 0) {
+       device->kgsl_dma_type = TU_KGSL_DMA_TYPE_DMAHEAP;
+    } else {
++      if (errno == ENOENT)
++         mesa_logw("%s not found, falling back to ION", dma_heap_path);
++      else
++         mesa_logw("Failed to open %s: %s, falling back to ION",
++                   dma_heap_path, strerror(errno));
++
+       dma_fd = open(ion_path, O_RDONLY);
+       if (dma_fd >= 0) {
+          /* ION_IOC_FREE available only for legacy ION */
+@@ -1400,6 +1447,10 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd,
+          else
+             device->kgsl_dma_type = TU_KGSL_DMA_TYPE_ION;
+       } else {
++         if (errno == ENOENT)
++            mesa_logw("%s not found, dma-buf export will not work", ion_path);
++         else
++            mesa_logw("Failed to open %s: %s", ion_path, strerror(errno));
+          mesa_logw(
+             "Unable to open neither %s nor %s, VK_KHR_external_memory_fd would be "
+             "unavailable: %s",

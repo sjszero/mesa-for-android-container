@@ -50,7 +50,7 @@ jobs:
       - name: Clone repository
         run: |
           cd ~
-          git clone -b turnip-kgsl-drm https://github.com/Saikatsaha1996/mesa-for-android-container.git
+          git clone -b turnip-main https://github.com/lfdevs/mesa-for-android-container.git
       - name: Set release name suffix
         shell: bash
         run: |
@@ -58,6 +58,8 @@ jobs:
           version=$(grep -v '^[[:space:]]*$' VERSION | head -n1)
           build_date=$(TZ=Asia/Shanghai date +%Y%m%d)
           echo "MESA_RELEASE_NAME_SUFFIX=${version}-${build_date}_debian_trixie_arm64" >> "$GITHUB_ENV"
+          wget https://github.com/sjszero/mesa-for-android-container/raw/mesa-test/wayland.patch
+          patch -p1 < wayland.patch
           
       - name: Build Mesa
         shell: bash

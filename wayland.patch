@@ -2096,16 +2096,16 @@ From: Vulkan Dev <vulkan@dev>
 Date: Sun, 7 Jun 2026 12:00:00 +0000
 Subject: [PATCH 2/2] freedreno/tu: fix kgsl-drm backend crashes
 
-- Implement kgsl_device_get_gpu_timestamp() properly
 - Initialize kgsl_profiling_mutex, submit_mutex, timeline_cond
-- Correct kernel driver name detection for kgsl-drm path
-- Add sanity check for va_size default
+- Implement kgsl_device_get_gpu_timestamp() properly
+- Add va_size default and sanity check
+- Expand backend driver name matching
 
 Signed-off-by: Vulkan Dev <vulkan@dev>
 ---
- src/freedreno/vulkan/tu_knl.cc          |  7 +++++--
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 35 ++++++++++++++++++++++++++++++++---
- 2 files changed, 37 insertions(+), 5 deletions(-)
+ src/freedreno/vulkan/tu_knl.cc          |  9 +++++----
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 29 ++++++++++++++++++++++++-----
+ 2 files changed, 29 insertions(+), 9 deletions(-)
 
 diff --git a/src/freedreno/vulkan/tu_knl.cc b/src/freedreno/vulkan/tu_knl.cc
 index de09300..f8b1c2e 100644
@@ -2130,7 +2130,7 @@ index de09300..f8b1c2e 100644
        result = vk_startup_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
                                   "device %s (%s) is not compatible with turnip",
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-index e4b80b1..6c5f2a1 100644
+index e4b80b1..da78c3f 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 @@ -1424,7 +1424,14 @@ kgsl_device_init(struct tu_device *dev)

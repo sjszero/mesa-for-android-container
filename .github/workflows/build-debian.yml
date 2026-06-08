@@ -51,7 +51,7 @@ jobs:
         run: |
           cd ~
           # git clone -b turnip-main https://github.com/lfdevs/mesa-for-android-container.git
-          git clone https://github.com/SnowNF/mesa.git
+          git clone -b main-termux https://github.com/SnowNF/mesa.git
       - name: Set release name suffix
         shell: bash
         run: |

@@ -70,7 +70,22 @@ jobs:
           export CCACHE_DIR=/root/.ccache
           echo "Building Mesa..."
           cd ~/mesa
-          meson setup build/
+          meson setup build/ \
+            --prefix=/usr \
+            -Dplatforms=x11,wayland \
+            -Dgallium-drivers=freedreno,zink \
+            -Dvulkan-drivers=freedreno \
+            -Dvulkan-layers= \
+            -Degl=enabled \
+            -Dgles2=enabled \
+            -Dglvnd=enabled \
+            -Dglx=dri \
+            -Dlibunwind=disabled \
+            -Dintel-rt=disabled \
+            -Dmicrosoft-clc=disabled \
+            -Dgles1=disabled \
+            -Dfreedreno-kmds=kgsl-drm \
+            -Dbuildtype=release
           ninja -C build/
           echo "Mesa build completed successfully!"
 

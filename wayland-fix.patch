@@ -1,0 +1,13 @@
+diff --git a/src/freedreno/vulkan/tu_wsi.cc b/src/freedreno/vulkan/tu_wsi.cc
+index b2b37643450..c3c48754561 100644
+--- a/src/freedreno/vulkan/tu_wsi.cc
++++ b/src/freedreno/vulkan/tu_wsi.cc
+@@ -32,7 +32,7 @@ tu_wsi_can_present_on_device(VkPhysicalDevice physicalDevice, int fd)
+     * fail on a KGSL fd.  In the Termux/X11 environment the DRI3 fd from
+     * the X server is for the same physical GPU, so treat it as compatible.
+     */
+-   if (strcmp(pdevice->instance->knl->name, "kgsl") == 0)
++   if (strcmp(pdevice->instance->knl->name, "kgsl_drm") == 0)
+       return true;
+ 
+    return wsi_common_drm_devices_equal(fd, pdevice->local_fd);

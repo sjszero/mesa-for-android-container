@@ -112,7 +112,7 @@ new file mode 100644
 index 00000000000..42c38427cec
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1962 @@
+@@ -0,0 +1,1963 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -1966,7 +1966,8 @@ index 00000000000..42c38427cec
 +   /* kgsl version check? */
 +
 +   device->instance = instance;
-+   device->master_fd = -1;
++   device->master_fd = fd;
++   device->has_master = true;
 +   device->local_fd = fd;
 +   device->kgsl_dma_fd = dma_fd;
 +

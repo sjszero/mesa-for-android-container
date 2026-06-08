@@ -139,7 +139,7 @@ new file mode 100644
 index 00000000000..b9e3a7f5c8d
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1963 @@
+@@ -0,0 +1,1965 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -240,7 +240,7 @@ index 00000000000..b9e3a7f5c8d
 +                       "DMA_HEAP_IOCTL_ALLOC failed (%s)", strerror(errno));
 +   }
 +
-+   return tu_bo_init_dmabuf(dev, out_bo, -1, alloc.fd);
++   return tu_bo_init_dmabuf(dev, out_bo, size, flags, alloc.fd);
 +}
 +
 +static VkResult
@@ -261,7 +261,7 @@ index 00000000000..b9e3a7f5c8d
 +                       "ION_IOC_NEW_ALLOC failed (%s)", strerror(errno));
 +   }
 +
-+   return tu_bo_init_dmabuf(dev, out_bo, -1, alloc.fd);
++   return tu_bo_init_dmabuf(dev, out_bo, size, flags, alloc.fd);
 +}
 +
 +static VkResult
@@ -439,7 +439,7 @@ index 00000000000..b9e3a7f5c8d
 +      .iova = req.gpuaddr,
 +      .name = tu_debug_bos_add(dev, req.mmapsize, name),
 +      .refcnt = 1,
-+      .shared_fd = -1,
++      .dmabuf_fd = -1,
 +      .base = base,
 +   };
 +
@@ -471,8 +471,10 @@ index 00000000000..b9e3a7f5c8d
 +kgsl_bo_init_dmabuf(struct tu_device *dev,
 +                    struct tu_bo **out_bo,
 +                    uint64_t size,
++                    enum tu_bo_alloc_flags flags,
 +                    int fd)
 +{
++   (void)flags;  // 避免未使用参数警告
 +   struct kgsl_gpuobj_import_dma_buf import_dmabuf = {
 +      .fd = fd,
 +   };
@@ -509,7 +511,7 @@ index 00000000000..b9e3a7f5c8d
 +      .iova = info_req.gpuaddr,
 +      .name = tu_debug_bos_add(dev, info_req.size, "dmabuf"),
 +      .refcnt = 1,
-+      .shared_fd = os_dupfd_cloexec(fd),
++      .dmabuf_fd = os_dupfd_cloexec(fd),
 +   };
 +
 +   struct stat st;
@@ -529,15 +531,15 @@ index 00000000000..b9e3a7f5c8d
 +static int
 +kgsl_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo)
 +{
-+   assert(bo->shared_fd != -1);
-+   return os_dupfd_cloexec(bo->shared_fd);
++   assert(bo->dmabuf_fd != -1);
++   return os_dupfd_cloexec(bo->dmabuf_fd);
 +}
 +
 +static VkResult
 +kgsl_bo_map(struct tu_device *dev, struct tu_bo *bo, void *placed_addr)
 +{
 +   void *map = MAP_FAILED;
-+   if (bo->shared_fd == -1) {
++   if (bo->dmabuf_fd == -1) {
 +      uint64_t offset = bo->gem_handle << 12;
 +      map = mmap(placed_addr, bo->size, PROT_READ | PROT_WRITE,
 +                 MAP_SHARED | (placed_addr != NULL ? MAP_FIXED : 0),
@@ -545,7 +547,7 @@ index 00000000000..b9e3a7f5c8d
 +   } else {
 +      map = mmap(placed_addr, bo->size, PROT_READ | PROT_WRITE,
 +                 MAP_SHARED | (placed_addr != NULL ? MAP_FIXED : 0),
-+                 bo->shared_fd, 0);
++                 bo->dmabuf_fd, 0);
 +   }
 +
 +   if (map == MAP_FAILED)
@@ -578,8 +580,8 @@ index 00000000000..b9e3a7f5c8d
 +      munmap(bo->map, bo->size);
 +   }
 +
-+   if (bo->shared_fd != -1)
-+      close(bo->shared_fd);
++   if (bo->dmabuf_fd != -1)
++      close(bo->dmabuf_fd);
 +
 +   TU_RMV(bo_destroy, dev, bo);
 +
@@ -633,7 +635,7 @@ index 00000000000..b9e3a7f5c8d
 +      .size = req.mmapsize,
 +      .name = NULL,
 +      .refcnt = 1,
-+      .shared_fd = -1,
++      .dmabuf_fd = -1,
 +      .base = base,
 +   };
 +

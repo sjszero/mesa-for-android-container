@@ -70,9 +70,8 @@ jobs:
           export CCACHE_DIR=/root/.ccache
           echo "Building Mesa..."
           cd ~/mesa
-          meson build/ \
+          meson setup build/ \
             --prefix=/usr \
-            -Dplatforms=x11,wayland \
             -Dgallium-drivers=freedreno,zink \
             -Dvulkan-drivers=freedreno \
             -Dfreedreno-kmds=kgsl-drm \

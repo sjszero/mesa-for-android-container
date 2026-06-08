@@ -303,7 +303,7 @@ index 00000000000..b9e3a7f5c8d
 +                       "ION_IOC_FREE failed (%s)", strerror(errno));
 +   }
 +
-+   return tu_bo_init_dmabuf(dev, out_bo, -1, share.fd);
++   return tu_bo_init_dmabuf(dev, out_bo, size, flags, share.fd);
 +}
 +
 +static VkResult
@@ -439,7 +439,7 @@ index 00000000000..b9e3a7f5c8d
 +      .iova = req.gpuaddr,
 +      .name = tu_debug_bos_add(dev, req.mmapsize, name),
 +      .refcnt = 1,
-+      .dmabuf_fd = -1,
++      .shared_fd = -1,
 +      .base = base,
 +   };
 +
@@ -511,7 +511,7 @@ index 00000000000..b9e3a7f5c8d
 +      .iova = info_req.gpuaddr,
 +      .name = tu_debug_bos_add(dev, info_req.size, "dmabuf"),
 +      .refcnt = 1,
-+      .dmabuf_fd = os_dupfd_cloexec(fd),
++      .shared_fd = os_dupfd_cloexec(fd),
 +   };
 +
 +   struct stat st;
@@ -531,15 +531,15 @@ index 00000000000..b9e3a7f5c8d
 +static int
 +kgsl_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo)
 +{
-+   assert(bo->dmabuf_fd != -1);
-+   return os_dupfd_cloexec(bo->dmabuf_fd);
++   assert(bo->shared_fd != -1);
++   return os_dupfd_cloexec(bo->shared_fd);
 +}
 +
 +static VkResult
 +kgsl_bo_map(struct tu_device *dev, struct tu_bo *bo, void *placed_addr)
 +{
 +   void *map = MAP_FAILED;
-+   if (bo->dmabuf_fd == -1) {
++   if (bo->shared_fd == -1) {
 +      uint64_t offset = bo->gem_handle << 12;
 +      map = mmap(placed_addr, bo->size, PROT_READ | PROT_WRITE,
 +                 MAP_SHARED | (placed_addr != NULL ? MAP_FIXED : 0),
@@ -547,7 +547,7 @@ index 00000000000..b9e3a7f5c8d
 +   } else {
 +      map = mmap(placed_addr, bo->size, PROT_READ | PROT_WRITE,
 +                 MAP_SHARED | (placed_addr != NULL ? MAP_FIXED : 0),
-+                 bo->dmabuf_fd, 0);
++                 bo->shared_fd, 0);
 +   }
 +
 +   if (map == MAP_FAILED)
@@ -580,8 +580,8 @@ index 00000000000..b9e3a7f5c8d
 +      munmap(bo->map, bo->size);
 +   }
 +
-+   if (bo->dmabuf_fd != -1)
-+      close(bo->dmabuf_fd);
++   if (bo->shared_fd != -1)
++      close(bo->shared_fd);
 +
 +   TU_RMV(bo_destroy, dev, bo);
 +
@@ -635,7 +635,7 @@ index 00000000000..b9e3a7f5c8d
 +      .size = req.mmapsize,
 +      .name = NULL,
 +      .refcnt = 1,
-+      .dmabuf_fd = -1,
++      .shared_fd = -1,
 +      .base = base,
 +   };
 +
@@ -2124,3 +2124,16 @@ index 12b694b4aae..b2b37643450 100644
     return wsi_common_drm_devices_equal(fd, pdevice->local_fd);
  #else
     return true;
+diff --git a/src/freedreno/vulkan/tu_knl.h b/src/freedreno/vulkan/tu_knl.h
+index 313fc915b9b..0426eba53d3 100644
+--- a/src/freedreno/vulkan/tu_knl.h
++++ b/src/freedreno/vulkan/tu_knl.h
+@@ -50,7 +50,7 @@ struct tu_bo {
+    uint32_t submit_bo_list_idx;
+    uint32_t dump_bo_list_idx;
+ 
+-#ifdef TU_HAS_KGSL
++#if defined(TU_HAS_KGSL) || defined(TU_HAS_KGSL_DRM)
+    /* We have to store fd returned by ion_fd_data
+     * in order to be able to mmap this buffer and to
+     * export file descriptor.

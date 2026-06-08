@@ -139,7 +139,7 @@ new file mode 100644
 index 00000000000..b9e3a7f5c8d
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1992 @@
+@@ -0,0 +1,1985 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -175,16 +175,9 @@ index 00000000000..b9e3a7f5c8d
 +#include "tu_dynamic_rendering.h"
 +#include "tu_queue.h"
 +#include "tu_rmv.h"
-+#ifndef IOCTL_KGSL_GPUOBJ_GET_DMABUF
-+#define IOCTL_KGSL_GPUOBJ_GET_DMABUF \
-+   _IOWR(KGSL_IOCTL_TYPE, 0x9F, struct kgsl_gpuobj_get_dmabuf)
-+#endif
-+
-+/* ION_HEAP(ION_SYSTEM_HEAP_ID) */
-+#define KGSL_ION_SYSTEM_HEAP_MASK (1u << 25)
 +
 +
-+struct kgsl_gpuobj_get_dmabuf {
++struct kgsl_gpumem_get_dmabuf_fd {
 +   __u32 id;
 +   __u32 fd;
 +};

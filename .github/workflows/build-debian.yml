@@ -76,7 +76,7 @@ jobs:
             -Dgallium-drivers=freedreno,zink \
             -Dvulkan-drivers=freedreno \
             -Dfreedreno-kmds=kgsl-drm \
-          ninja -C build/
+          ninja build/
           echo "Mesa build completed successfully!"
 
       - name: Save ccache

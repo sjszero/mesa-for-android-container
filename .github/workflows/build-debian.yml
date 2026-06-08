@@ -73,7 +73,7 @@ jobs:
           meson build/ \
             --prefix=/usr \
             -Dplatforms=x11,wayland \
-            -Dgallium-drivers=freedreno,zink     \
+            -Dgallium-drivers=freedreno,zink \
             -Dvulkan-drivers=freedreno \
             -Dfreedreno-kmds=kgsl-drm \
           ninja -C build/

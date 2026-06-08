@@ -139,7 +139,7 @@ new file mode 100644
 index 00000000000..b9e3a7f5c8d
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1965 @@
+@@ -0,0 +1,1992 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -175,10 +175,19 @@ index 00000000000..b9e3a7f5c8d
 +#include "tu_dynamic_rendering.h"
 +#include "tu_queue.h"
 +#include "tu_rmv.h"
++#ifndef IOCTL_KGSL_GPUOBJ_GET_DMABUF
++#define IOCTL_KGSL_GPUOBJ_GET_DMABUF \
++   _IOWR(KGSL_IOCTL_TYPE, 0x9F, struct kgsl_gpuobj_get_dmabuf)
++#endif
 +
 +/* ION_HEAP(ION_SYSTEM_HEAP_ID) */
 +#define KGSL_ION_SYSTEM_HEAP_MASK (1u << 25)
 +
++
++struct kgsl_gpuobj_get_dmabuf {
++   __u32 id;
++   __u32 fd;
++};
 +
 +static int
 +safe_ioctl(int fd, unsigned long request, void *arg)
@@ -342,10 +351,11 @@ index 00000000000..b9e3a7f5c8d
 +                    struct tu_sparse_vma *vma,
 +                    struct tu_bo *bo, uint64_t bo_offset)
 +{
++   /* The length should be the size of the BO being mapped, not the virtual BO. */
 +   struct kgsl_gpumem_bind_range range = {
 +      .child_offset = bo_offset,
 +      .target_offset = 0,
-+      .length = vma->kgsl.virtual_bo->size,
++      .length = bo->size,
 +      .child_id = bo->gem_handle,
 +      .op = KGSL_GPUMEM_RANGE_OP_BIND,
 +   };
@@ -531,8 +541,25 @@ index 00000000000..b9e3a7f5c8d
 +static int
 +kgsl_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo)
 +{
-+   assert(bo->shared_fd != -1);
-+   return os_dupfd_cloexec(bo->shared_fd);
++    // 如果已经有一个缓存的 dma-buf fd，直接复制返回
++    if (bo->shared_fd != -1)
++        return os_dupfd_cloexec(bo->shared_fd);
++
++    // 否则通过 KGSL ioctl 获取 dma-buf fd
++    struct kgsl_gpuobj_get_dmabuf req = {
++        .id = bo->gem_handle,
++    };
++    int ret = safe_ioctl(dev->physical_device->local_fd,
++                         IOCTL_KGSL_GPUOBJ_GET_DMABUF, &req);
++    if (ret) {
++        mesa_loge("KGSL_GPUOBJ_GET_DMABUF failed for handle %u: %s",
++                  bo->gem_handle, strerror(errno));
++        return -1;
++    }
++
++    // 缓存 fd 以便后续重用
++    bo->shared_fd = req.fd;
++    return os_dupfd_cloexec(req.fd);
 +}
 +
 +static VkResult

@@ -6,7 +6,7 @@ on:
       tag:
         description: 'Branch or tag'
         required: true
-        default: 'turnip-main'
+        default: 'dev/andreno-main'
       draft_release:
         description: 'Draft a new release'
         required: true

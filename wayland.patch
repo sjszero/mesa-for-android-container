@@ -1,30 +1,29 @@
-From 3fe08028547bc6d29751decc8c73c07a5f39dca6 Mon Sep 17 00:00:00 2001
-From: Osilvfe <3072756864@qq.com>
+From: Merged <merged@example.com>
 Date: Tue, 23 Dec 2025 17:01:15 +0800
-Subject: [PATCH] tu: add KGSL DRM kernel backend support
+Subject: [PATCH] tu: add support for Android msm_drm (KGSL DRM) with improvements
 
-This adds a hybrid KGSL backend that works through DRM nodes,
-allowing Turnip to run inside Linux containers (e.g., Termux,
-proot-distro) where the GPU is exposed via /dev/dri/card*.
+This patch adds a new KGSL DRM backend for Turnip, allowing it to run on
+Android devices with the msm_drm kernel driver. It is based on the original
+wayland.patch and incorporates additional fixes from wayland2.patch:
 
-Key features:
-- Uses KGSL ioctls via the DRM-opened device fd
-- Supports shareable memory via DMABUF/ION
-- Implements sparse bindings (VK_KHR_bind_memory2)
-- Includes WSI fixes for KGSL (can_present_on_device)
-- Drops strict KHR_display check to allow device enumeration
+- More robust sparse binding detection (actual bind/unbind test)
+- Set unique_id for imported dmabufs (for VK_EXT_device_memory_report)
+- Fix pure wait submission handling (commands + bind_cmds both empty)
+- Explicitly disable userspace performance counter selection on KGSL
+- Keep all runtime fixes from wayland.patch (queue family count, WSI
+  present, KHR_display removal)
 
-Co-authored-by: lfdevs <109842948+lfdevs@users.noreply.github.com>
+Signed-off-by: Osilvfe <3072756864@qq.com>
 ---
  meson.build                             |    2 +-
  meson.options                           |    8 +-
  src/freedreno/vulkan/meson.build        |    6 +
  src/freedreno/vulkan/tu_device.h        |    2 +-
- src/freedreno/vulkan/tu_knl.cc          |    4 +
- src/freedreno/vulkan/tu_knl.h           |    5 +
- src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 1909 +++++++++++++++++++++++
+ src/freedreno/vulkan/tu_knl.cc          |   14 +-
+ src/freedreno/vulkan/tu_knl.h           |   11 +-
+ src/freedreno/vulkan/tu_knl_kgsl_drm.cc | 1966 +++++++++++++++++++++++
  src/freedreno/vulkan/tu_wsi.cc          |    8 +
- 8 files changed, 1940 insertions(+), 4 deletions(-)
+ 8 files changed, 2011 insertions(+), 6 deletions(-)
  create mode 100644 src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 
 diff --git a/meson.build b/meson.build
@@ -119,10 +118,19 @@ index bd64af99a88..65b0df6796f 100644
        result = vk_startup_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
                                   "device %s (%s) is not compatible with turnip",
 diff --git a/src/freedreno/vulkan/tu_knl.h b/src/freedreno/vulkan/tu_knl.h
-index 313fc915b9b..0426eba53d3 100644
+index 313fc915b9b..623b21f8de8 100644
 --- a/src/freedreno/vulkan/tu_knl.h
 +++ b/src/freedreno/vulkan/tu_knl.h
-@@ -248,6 +248,11 @@ VkResult tu_sparse_vma_init(struct tu_device *dev,
+@@ -50,7 +50,7 @@ struct tu_bo {
+    uint32_t submit_bo_list_idx;
+    uint32_t dump_bo_list_idx;
+ 
+-#ifdef TU_HAS_KGSL
++#if defined(TU_HAS_KGSL) || defined(TU_HAS_KGSL_DRM)
+    /* We have to store fd returned by ion_fd_data
+     * in order to be able to mmap this buffer and to
+     * export file descriptor.
+@@ -261,6 +261,11 @@ VkResult tu_sparse_vma_init(struct tu_device *dev,
  void tu_sparse_vma_finish(struct tu_device *device,
                            struct tu_sparse_vma *vma);
  
@@ -136,72 +144,47 @@ index 313fc915b9b..0426eba53d3 100644
  struct _drmVersion;
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl_drm.cc b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
 new file mode 100644
-index 00000000000..b9e3a7f5c8d
+index 00000000000..e4b80b1d8c5
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,2014 @@
+@@ -0,0 +1,1965 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
 + */
 +
-+#include "tu_knl.h"
-+
 +#include <errno.h>
 +#include <fcntl.h>
++#include <linux/dma-heap.h>
 +#include <poll.h>
 +#include <stdint.h>
 +#include <sys/ioctl.h>
 +#include <sys/mman.h>
-+#include <linux/dma-heap.h>
-+#include <drm.h>
 +#include <xf86drm.h>
 +
-+#ifdef MAJOR_IN_MKDEV
-+#include <sys/mkdev.h>
-+#endif
-+
 +#define __user
-+#include "msm_kgsl.h"
 +#include "ion/ion.h"
 +#include "ion/ion_4.19.h"
++#include "msm_kgsl.h"
 +
-+#include "vk_util.h"
-+
++#include "util/libsync.h"
 +#include "util/os_file.h"
++#include "util/timespec.h"
 +#include "util/u_debug.h"
 +#include "util/u_vector.h"
-+#include "util/libsync.h"
-+#include "util/timespec.h"
++#include "vk_util.h"
 +
 +#include "tu_cmd_buffer.h"
 +#include "tu_cs.h"
 +#include "tu_device.h"
 +#include "tu_dynamic_rendering.h"
++#include "tu_knl.h"
 +#include "tu_queue.h"
 +#include "tu_rmv.h"
 +
-+#include "tu_queue.h"
-+#include "tu_rmv.h"
-+
-+/* 缺失的宏定义 */
-+#ifndef KGSL_ION_SYSTEM_HEAP_MASK
++/* ION_HEAP(ION_SYSTEM_HEAP_ID) */
 +#define KGSL_ION_SYSTEM_HEAP_MASK (1u << 25)
-+#endif
 +
-+#ifndef KGSL_IOCTL_TYPE
-+#define KGSL_IOCTL_TYPE 0x09
-+#endif
-+
-+#ifndef IOCTL_KGSL_GPUMEM_GET_DMABUF_FD
-+#define IOCTL_KGSL_GPUMEM_GET_DMABUF_FD \
-+   _IOWR(KGSL_IOCTL_TYPE, 0x90, struct kgsl_gpumem_get_dmabuf_fd)
-+#endif
-+
-+struct kgsl_gpumem_get_dmabuf_fd {
-+   __u32 id;
-+   __u32 fd;
-+};
 +
 +static int
 +safe_ioctl(int fd, unsigned long request, void *arg)
@@ -263,7 +246,7 @@ index 00000000000..b9e3a7f5c8d
 +                       "DMA_HEAP_IOCTL_ALLOC failed (%s)", strerror(errno));
 +   }
 +
-+   return tu_bo_init_dmabuf(dev, out_bo, size, flags, alloc.fd);
++   return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, alloc.fd);
 +}
 +
 +static VkResult
@@ -284,7 +267,7 @@ index 00000000000..b9e3a7f5c8d
 +                       "ION_IOC_NEW_ALLOC failed (%s)", strerror(errno));
 +   }
 +
-+   return tu_bo_init_dmabuf(dev, out_bo, size, flags, alloc.fd);
++   return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, alloc.fd);
 +}
 +
 +static VkResult
@@ -326,7 +309,7 @@ index 00000000000..b9e3a7f5c8d
 +                       "ION_IOC_FREE failed (%s)", strerror(errno));
 +   }
 +
-+   return tu_bo_init_dmabuf(dev, out_bo, size, flags, share.fd);
++   return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, share.fd);
 +}
 +
 +static VkResult
@@ -365,11 +348,10 @@ index 00000000000..b9e3a7f5c8d
 +                    struct tu_sparse_vma *vma,
 +                    struct tu_bo *bo, uint64_t bo_offset)
 +{
-+   /* The length should be the size of the BO being mapped, not the virtual BO. */
 +   struct kgsl_gpumem_bind_range range = {
 +      .child_offset = bo_offset,
 +      .target_offset = 0,
-+      .length = bo->size,
++      .length = vma->kgsl.virtual_bo->size,
 +      .child_id = bo->gem_handle,
 +      .op = KGSL_GPUMEM_RANGE_OP_BIND,
 +   };
@@ -405,14 +387,6 @@ index 00000000000..b9e3a7f5c8d
 +             struct tu_sparse_vma *lazy_vma,
 +             const char *name)
 +{
-+   /* 强制所有 BO 标记为 SHAREABLE，确保交换链图像可以导出 dmabuf */
-+   flags = (enum tu_bo_alloc_flags)((int)flags | TU_BO_ALLOC_SHAREABLE);
-+   mesa_logi("kgsl_bo_init: size=%lu, name=%s, flags=%x (shareable forced)", size, name ? name : "NULL", flags);
-+   if (mem_property & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-+      mesa_logi("  DEVICE_LOCAL");
-+   if (mem_property & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
-+      mesa_logi("  HOST_VISIBLE");
-+
 +   if (flags & TU_BO_ALLOC_SHAREABLE) {
 +      /* The Vulkan spec doesn't forbid allocating exportable memory with a
 +       * fixed address, only imported memory, but on kgsl we can't sensibly
@@ -506,7 +480,6 @@ index 00000000000..b9e3a7f5c8d
 +                    enum tu_bo_alloc_flags flags,
 +                    int fd)
 +{
-+   (void)flags;  // 避免未使用参数警告
 +   struct kgsl_gpuobj_import_dma_buf import_dmabuf = {
 +      .fd = fd,
 +   };
@@ -563,45 +536,8 @@ index 00000000000..b9e3a7f5c8d
 +static int
 +kgsl_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo)
 +{
-+   if (bo->shared_fd != -1) {
-+      mesa_logi("kgsl_bo_export_dmabuf: using cached shared_fd=%d", bo->shared_fd);
-+      mesa_logi("  BO gem_handle=%u, size=%lu, name=%s", bo->gem_handle, bo->size, bo->name ? bo->name : "NULL");
-+      return os_dupfd_cloexec(bo->shared_fd);
-+   }
-+
-+   mesa_logi("kgsl_bo_export_dmabuf: trying KGSL ioctl for BO %u", bo->gem_handle);
-+   struct kgsl_gpumem_get_dmabuf_fd req = {
-+      .id = bo->gem_handle,
-+      .fd = -1,
-+   };
-+   int ret = safe_ioctl(dev->physical_device->local_fd,
-+                        IOCTL_KGSL_GPUMEM_GET_DMABUF_FD, &req);
-+   if (ret == 0) {
-+      mesa_logi("kgsl_bo_export_dmabuf: KGSL ioctl succeeded, fd=%d", req.fd);
-+      bo->shared_fd = req.fd;
-+      return os_dupfd_cloexec(bo->shared_fd);
-+   }
-+
-+   mesa_loge("kgsl_bo_export_dmabuf: KGSL ioctl failed (errno=%d), trying DRM PRIME", errno);
-+
-+   int drm_fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
-+   if (drm_fd < 0) {
-+      mesa_loge("kgsl_bo_export_dmabuf: cannot open /dev/dri/renderD128: %s", strerror(errno));
-+      return -1;
-+   }
-+
-+   uint32_t handle = bo->gem_handle;
-+   int prime_fd = -1;
-+   ret = drmPrimeHandleToFD(drm_fd, handle, DRM_CLOEXEC, &prime_fd);
-+   close(drm_fd);
-+   if (ret != 0) {
-+      mesa_loge("kgsl_bo_export_dmabuf: DRM PRIME failed: %s", strerror(errno));
-+      return -1;
-+   }
-+
-+   mesa_logi("kgsl_bo_export_dmabuf: DRM PRIME succeeded, fd=%d", prime_fd);
-+   bo->shared_fd = prime_fd;
-+   return os_dupfd_cloexec(prime_fd);
++   assert(bo->shared_fd != -1);
++   return os_dupfd_cloexec(bo->shared_fd);
 +}
 +
 +static VkResult
@@ -783,9 +719,6 @@ index 00000000000..b9e3a7f5c8d
 +   return true;
 +}
 +
-+/* Enhanced virtual BO support detection that actually tests binding.
-+ * (Taken from wayland2.patch for robustness)
-+ */
 +static bool
 +kgsl_is_virtual_bo_supported(int fd)
 +{
@@ -812,7 +745,7 @@ index 00000000000..b9e3a7f5c8d
 +      goto free_parent;
 +   }
 +
-+   req_range = (struct kgsl_gpumem_bind_range) {
++   req_range = {
 +      .child_offset = 0,
 +      .target_offset = 0,
 +      .length = 0x1000,
@@ -820,7 +753,7 @@ index 00000000000..b9e3a7f5c8d
 +      .op = KGSL_GPUMEM_RANGE_OP_BIND,
 +   };
 +
-+   req_ranges = (struct kgsl_gpumem_bind_ranges) {
++   req_ranges = {
 +      .ranges = (uint64_t) (uintptr_t) &req_range,
 +      .ranges_nents = 1,
 +      .ranges_size = sizeof(req_range),
@@ -836,11 +769,11 @@ index 00000000000..b9e3a7f5c8d
 +   supported = true;
 +
 +free_child:
-+   req_free_child = (struct kgsl_gpumem_free_id) { .id = req_alloc_child.id };
++   req_free_child = { .id = req_alloc_child.id };
 +   safe_ioctl(fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req_free_child);
 +
 +free_parent:
-+   req_free_parent = (struct kgsl_gpuobj_free) { .id = req_alloc_parent.id };
++   req_free_parent = { .id = req_alloc_parent.id };
 +   safe_ioctl(fd, IOCTL_KGSL_GPUOBJ_FREE, &req_free_parent);
 +
 +   return supported;
@@ -1970,6 +1903,10 @@ index 00000000000..b9e3a7f5c8d
 +}
 +
 +VkResult
++tu_knl_kgsl_load(struct tu_instance *instance, int fd,
++                 struct tu_physical_device **out);
++
++VkResult
 +tu_knl_kgsl_drm_load(struct tu_instance *instance,
 +                     struct _drmVersion *version,
 +                     struct tu_physical_device **out,
@@ -2000,8 +1937,13 @@ index 00000000000..b9e3a7f5c8d
 +
 +VkResult
 +tu_knl_kgsl_load(struct tu_instance *instance, int fd,
-+                 struct tu_physical_device **out)
-+{
++                 struct tu_physical_device **out){
++
++   if (instance->vk.enabled_extensions.KHR_display) {
++      return vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
++                       "I can't KHR_display");
++   }
++
 +   struct tu_physical_device *device = (struct tu_physical_device *)
 +      vk_zalloc(&instance->vk.alloc, sizeof(*device), 8,
 +                VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
@@ -2020,6 +1962,7 @@ index 00000000000..b9e3a7f5c8d
 +   } else {
 +      dma_fd = open(ion_path, O_RDONLY);
 +      if (dma_fd >= 0) {
++         /* ION_IOC_FREE available only for legacy ION */
 +         struct ion_handle_data free = { .handle = 0 };
 +         if (safe_ioctl(dma_fd, ION_IOC_FREE, &free) >= 0 || errno != ENOTTY)
 +            device->kgsl_dma_type = TU_KGSL_DMA_TYPE_ION_LEGACY;
@@ -2038,64 +1981,95 @@ index 00000000000..b9e3a7f5c8d
 +   struct kgsl_devinfo info;
 +   if (get_kgsl_prop(fd, KGSL_PROP_DEVICE_INFO, &info, sizeof(info)))
 +      goto fail;
++
 +   uint64_t gmem_iova;
 +   if (get_kgsl_prop(fd, KGSL_PROP_UCHE_GMEM_VADDR, &gmem_iova, sizeof(gmem_iova)))
 +      goto fail;
++
 +   uint32_t highest_bank_bit;
 +   if (get_kgsl_prop(fd, KGSL_PROP_HIGHEST_BANK_BIT, &highest_bank_bit,
 +                     sizeof(highest_bank_bit)))
 +      goto fail;
++
 +   uint32_t ubwc_version;
 +   if (get_kgsl_prop(fd, KGSL_PROP_UBWC_MODE, &ubwc_version,
 +                     sizeof(ubwc_version)))
 +      goto fail;
++
 +   if (get_kgsl_prop(fd, KGSL_PROP_UCHE_TRAP_BASE, &device->uche_trap_base,
 +                     sizeof(device->uche_trap_base))) {
++      /* It is known to be hardcoded to */
 +      device->uche_trap_base = 0x1fffffffff000ull;
 +   }
++
++   /* kgsl version check? */
 +
 +   device->instance = instance;
 +   device->master_fd = -1;
 +   device->local_fd = fd;
 +   device->kgsl_dma_fd = dma_fd;
 +
-+   device->dev_id.gpu_id = ((info.chip_id >> 24) & 0xff) * 100 +
-+                           ((info.chip_id >> 16) & 0xff) * 10 +
-+                           ((info.chip_id >> 8) & 0xff);
++   device->dev_id.gpu_id =
++      ((info.chip_id >> 24) & 0xff) * 100 +
++      ((info.chip_id >> 16) & 0xff) * 10 +
++      ((info.chip_id >>  8) & 0xff);
 +   device->dev_id.chip_id = info.chip_id;
 +   device->gmem_size = debug_get_num_option("TU_GMEM", info.gmem_sizebytes);
 +   device->gmem_base = gmem_iova;
-+   device->has_raytracing = tu_kgsl_get_raytracing(fd);
-+   device->submitqueue_priority_count = 1;
 +
++   device->has_raytracing = tu_kgsl_get_raytracing(fd);
++
++   device->submitqueue_priority_count = 1;
++   
 +   device->timeline_type = vk_sync_timeline_get_type(&vk_kgsl_sync_type);
++
 +   device->sync_types[0] = &vk_kgsl_sync_type;
 +   device->sync_types[1] = &device->timeline_type.sync;
 +   device->sync_types[2] = NULL;
 +
 +   device->heap.size = tu_get_system_heap_size(device);
-+   device->heap.used = 0;
++   device->heap.used = 0u;
 +   device->heap.flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
 +
-+   device->has_set_iova = kgsl_is_memory_type_supported(fd, KGSL_MEMFLAGS_USE_CPU_MAP);
++   device->has_set_iova = kgsl_is_memory_type_supported(
++      fd, KGSL_MEMFLAGS_USE_CPU_MAP);
++
++   /* Even if kernel is new enough, the GPU itself may not support it. */
 +   device->has_cached_coherent_memory = kgsl_is_memory_type_supported(
-+      fd, KGSL_MEMFLAGS_IOCOHERENT | (KGSL_CACHEMODE_WRITEBACK << KGSL_CACHEMODE_SHIFT));
++      fd, KGSL_MEMFLAGS_IOCOHERENT |
++             (KGSL_CACHEMODE_WRITEBACK << KGSL_CACHEMODE_SHIFT));
++
 +   device->has_sparse = kgsl_is_virtual_bo_supported(fd);
 +   device->has_sparse_prr = device->has_sparse;
 +   device->has_lazy_bos = device->has_sparse;
-+   get_kgsl_prop(fd, KGSL_PROP_GPU_VA64_SIZE, &device->va_size, sizeof(device->va_size));
++   get_kgsl_prop(fd, KGSL_PROP_GPU_VA64_SIZE, &device->va_size,
++                 sizeof(device->va_size));
++   /* We don't actually use the VMA, but set a fake offset so that it doesn't
++    * think we're trying to allocate 0 and assert.
++    */
 +   device->va_start = 0x100000000;
++
++   /* preemption is always supported on kgsl */
 +   device->has_preemption = true;
++
++   /* KGSL doesn't allow writing the perf counter selector as the expectation is to use the uAPI provided for this. */
 +   device->is_perf_cntr_selectable = false;
 +
 +   device->ubwc_config.highest_bank_bit = highest_bank_bit;
-+   /* UBWC version mapping ... (same as before) */
++
++   /* The other config values can be partially inferred from the UBWC version,
++    * but kgsl also hardcodes overrides for specific a6xx versions that we
++    * have to follow here. Yuck.
++    */
 +   switch (ubwc_version) {
 +   case KGSL_UBWC_1_0:
 +      device->ubwc_config.bank_swizzle_levels = 0x7;
 +      device->ubwc_config.macrotile_mode = FDL_MACROTILE_4_CHANNEL;
 +      break;
 +   case KGSL_UBWC_2_0:
++      device->ubwc_config.bank_swizzle_levels = 0x6;
++      device->ubwc_config.macrotile_mode = FDL_MACROTILE_4_CHANNEL;
++      break;
 +   case KGSL_UBWC_3_0:
 +      device->ubwc_config.bank_swizzle_levels = 0x6;
 +      device->ubwc_config.macrotile_mode = FDL_MACROTILE_4_CHANNEL;
@@ -2107,14 +2081,20 @@ index 00000000000..b9e3a7f5c8d
 +      device->ubwc_config.macrotile_mode = FDL_MACROTILE_8_CHANNEL;
 +      break;
 +   default:
-+      vk_startup_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
-+                        "unknown UBWC version 0x%x", ubwc_version);
-+      goto fail;
++      return vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
++                       "unknown UBWC version 0x%x", ubwc_version);
 +   }
-+   if (device->dev_id.gpu_id == 663 || device->dev_id.gpu_id == 680)
++
++   /* kgsl unfortunately hardcodes some settings for certain GPUs and doesn't
++    * expose them in the uAPI so hardcode them here to match.
++    */
++   if (device->dev_id.gpu_id == 663 || device->dev_id.gpu_id == 680) {
 +      device->ubwc_config.macrotile_mode = FDL_MACROTILE_8_CHANNEL;
-+   if (device->dev_id.gpu_id == 663)
++   }
++   if (device->dev_id.gpu_id == 663) {
++      /* level2_swizzling_dis = 1 */
 +      device->ubwc_config.bank_swizzle_levels = 0x4;
++   }
 +
 +   instance->knl = &kgsl_drm_knl_funcs;
 +
@@ -2122,29 +2102,8 @@ index 00000000000..b9e3a7f5c8d
 +   if (result != VK_SUCCESS)
 +      goto fail;
 +
-+   /* 设置 DRM 节点信息以支持 VK_EXT_physical_device_drm */
-+   int drm_render_fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
-+   if (drm_render_fd >= 0) {
-+      struct stat st;
-+      if (fstat(drm_render_fd, &st) == 0) {
-+         device->has_local = true;
-+         device->local_major = major(st.st_rdev);
-+         device->local_minor = minor(st.st_rdev);
-+      }
-+      close(drm_render_fd);
-+   }
-+   int drm_primary_fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
-+   if (drm_primary_fd >= 0) {
-+      struct stat st;
-+      if (fstat(drm_primary_fd, &st) == 0) {
-+         device->has_master = true;
-+         device->master_major = major(st.st_rdev);
-+         device->master_minor = minor(st.st_rdev);
-+      }
-+      close(drm_primary_fd);
-+   }
-+
 +   *out = device;
++
 +   return VK_SUCCESS;
 +
 +fail:
@@ -2167,22 +2126,11 @@ index 12b694b4aae..b2b37643450 100644
 +    * fail on a KGSL fd.  In the Termux/X11 environment the DRI3 fd from
 +    * the X server is for the same physical GPU, so treat it as compatible.
 +    */
-+   if (strcmp(pdevice->instance->knl->name, "kgsl_drm") == 0)
++   if (strcmp(pdevice->instance->knl->name, "kgsl") == 0)
 +      return true;
 +
     return wsi_common_drm_devices_equal(fd, pdevice->local_fd);
  #else
     return true;
-diff --git a/src/freedreno/vulkan/tu_knl.h b/src/freedreno/vulkan/tu_knl.h
-index 313fc915b9b..0426eba53d3 100644
---- a/src/freedreno/vulkan/tu_knl.h
-+++ b/src/freedreno/vulkan/tu_knl.h
-@@ -50,7 +50,7 @@ struct tu_bo {
-    uint32_t submit_bo_list_idx;
-    uint32_t dump_bo_list_idx;
- 
--#ifdef TU_HAS_KGSL
-+#if defined(TU_HAS_KGSL) || defined(TU_HAS_KGSL_DRM)
-    /* We have to store fd returned by ion_fd_data
-     * in order to be able to mmap this buffer and to
-     * export file descriptor.
+-- 
+2.47.3

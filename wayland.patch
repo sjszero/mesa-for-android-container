@@ -2132,7 +2132,7 @@ index 12b694b4aae..b2b37643450 100644
 diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
 --- a/src/freedreno/vulkan/tu_device.cc
 +++ b/src/freedreno/vulkan/tu_device.cc
-@@ -3717,6 +3717,27 @@ tu_AllocateMemory(VkDevice _device,
+@@ -3717,6 +3717,24 @@ tu_AllocateMemory(VkDevice _device,
           alloc_flags |= TU_BO_ALLOC_IMPLICIT_SYNC;
  
        char name[64] = "vkAllocateMemory()";
@@ -2143,19 +2143,16 @@ diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.
 +      const VkMemoryDedicatedAllocateInfo *dedicate_info =
 +         vk_find_struct_const(pAllocateInfo->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
 +      if (dedicate_info && dedicate_info->image) {
-+         TU_FROM_HANDLE(tu_image, image, dedicate_info->image);
-+         if (image->vk.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-+                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-+                                VK_IMAGE_USAGE_SAMPLED_BIT)) {
++         struct tu_image *image = tu_image_from_handle(dedicate_info->image);
++         if (image && (image->vk.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
++                                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
++                                          VK_IMAGE_USAGE_SAMPLED_BIT))) {
 +            alloc_flags |= TU_BO_ALLOC_SHAREABLE;
 +            if (TU_DEBUG(STARTUP)) {
 +               mesa_logi("Swapchain image memory: forcing TU_BO_ALLOC_SHAREABLE");
 +            }
 +         }
 +      }
-+      /* Also force shareable if memory type is device-local (common for WSI) */
-+      if (mem->vk.memory_type_index == 0)  /* device-local, host-visible, coherent */
-+         alloc_flags |= TU_BO_ALLOC_SHAREABLE;
 +
        if (device->bo_sizes)
           snprintf(name, ARRAY_SIZE(name), "vkAllocateMemory(%ldkb)",
@@ -2163,19 +2160,18 @@ diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.
 diff --git a/src/freedreno/vulkan/tu_wsi.cc b/src/freedreno/vulkan/tu_wsi.cc
 --- a/src/freedreno/vulkan/tu_wsi.cc
 +++ b/src/freedreno/vulkan/tu_wsi.cc
-@@ -53,6 +53,17 @@ tu_wsi_init(struct tu_physical_device *physical_device)
+@@ -61,6 +61,16 @@ tu_wsi_init(struct tu_physical_device *physical_device)
     physical_device->wsi_device.can_present_on_device =
        tu_wsi_can_present_on_device;
  
-+   /* For KGSL backend, disable DRM modifiers and prime blit paths which
-+    * are not supported. This forces the WSI to use simpler linear images
-+    * and avoids incompatible dma-buf import/export sequences.
++   /* For KGSL backend, disable DRM modifiers which are not supported.
++    * This forces the WSI to use simpler linear images and avoids
++    * incompatible dma-buf import/export sequences.
 +    */
 +   if (strcmp(physical_device->instance->knl->name, "kgsl") == 0) {
 +      physical_device->wsi_device.supports_modifiers = false;
-+      physical_device->wsi_device.use_prime_blit = false;
 +      if (TU_DEBUG(STARTUP))
-+         mesa_logi("KGSL: Disabled DRM modifiers and prime blit in WSI");
++         mesa_logi("KGSL: Disabled DRM modifiers in WSI");
 +   }
 +
     physical_device->vk.wsi_device = &physical_device->wsi_device;

@@ -139,7 +139,7 @@ new file mode 100644
 index 00000000000..b9e3a7f5c8d
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,2033 @@
+@@ -0,0 +1,2028 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -406,11 +406,6 @@ index 00000000000..b9e3a7f5c8d
 +             struct tu_sparse_vma *lazy_vma,
 +             const char *name)
 +{
-+   /* For shareable BOs (e.g., swapchain images), force allocation from dma-heap
-+    * to guarantee we have a valid dmabuf fd later. */
-+   if (flags & TU_BO_ALLOC_SHAREABLE) {
-+      flags |= TU_BO_ALLOC_SHAREABLE; /* already set, just to document */
-+   }
 +   if (flags & TU_BO_ALLOC_SHAREABLE) {
 +      /* The Vulkan spec doesn't forbid allocating exportable memory with a
 +       * fixed address, only imported memory, but on kgsl we can't sensibly

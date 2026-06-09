@@ -147,7 +147,7 @@ new file mode 100644
 index 00000000000..e4b80b1d8c5
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1965 @@
+@@ -0,0 +1,1960 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -1938,11 +1938,6 @@ index 00000000000..e4b80b1d8c5
 +VkResult
 +tu_knl_kgsl_load(struct tu_instance *instance, int fd,
 +                 struct tu_physical_device **out){
-+
-+   if (instance->vk.enabled_extensions.KHR_display) {
-+      return vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
-+                       "I can't KHR_display");
-+   }
 +
 +   struct tu_physical_device *device = (struct tu_physical_device *)
 +      vk_zalloc(&instance->vk.alloc, sizeof(*device), 8,

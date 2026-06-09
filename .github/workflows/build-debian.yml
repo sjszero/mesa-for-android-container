@@ -6,7 +6,7 @@ on:
       tag:
         description: 'Branch or tag'
         required: true
-        default: 'dev/andreno-main'
+        default: 'dev/adreno-main'
       draft_release:
         description: 'Draft a new release'
         required: true

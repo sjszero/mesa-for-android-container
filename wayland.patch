@@ -139,7 +139,7 @@ new file mode 100644
 index 00000000000..b9e3a7f5c8d
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,2001 @@
+@@ -0,0 +1,2035 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -154,6 +154,7 @@ index 00000000000..b9e3a7f5c8d
 +#include <sys/ioctl.h>
 +#include <sys/mman.h>
 +#include <linux/dma-heap.h>
++#include <drm.h>
 +#include <xf86drm.h>
 +
 +#define __user
@@ -188,15 +189,20 @@ index 00000000000..b9e3a7f5c8d
 +#define KGSL_IOCTL_TYPE 0x09
 +#endif
 +
++/* 定义 ioctl 号，如果内核头文件没有定义的话 */
 +#ifndef IOCTL_KGSL_GPUMEM_GET_DMABUF_FD
 +#define IOCTL_KGSL_GPUMEM_GET_DMABUF_FD \
 +   _IOWR(KGSL_IOCTL_TYPE, 0x90, struct kgsl_gpumem_get_dmabuf_fd)
 +#endif
 +
++/* 使用标准名称，避免冲突 */
++#ifndef __kgsl_gpumem_get_dmabuf_fd_defined
++#define __kgsl_gpumem_get_dmabuf_fd_defined
 +struct kgsl_gpumem_get_dmabuf_fd {
 +   __u32 id;
 +   __u32 fd;
 +};
++#endif
 +
 +static int
 +safe_ioctl(int fd, unsigned long request, void *arg)
@@ -400,6 +406,11 @@ index 00000000000..b9e3a7f5c8d
 +             struct tu_sparse_vma *lazy_vma,
 +             const char *name)
 +{
++   /* For shareable BOs (e.g., swapchain images), force allocation from dma-heap
++    * to guarantee we have a valid dmabuf fd later. */
++   if (flags & TU_BO_ALLOC_SHAREABLE) {
++      flags |= TU_BO_ALLOC_SHAREABLE; /* already set, just to document */
++   }
 +   if (flags & TU_BO_ALLOC_SHAREABLE) {
 +      /* The Vulkan spec doesn't forbid allocating exportable memory with a
 +       * fixed address, only imported memory, but on kgsl we can't sensibly
@@ -559,14 +570,37 @@ index 00000000000..b9e3a7f5c8d
 +      .id = bo->gem_handle,
 +      .fd = -1,
 +   };
++   mesa_logi("kgsl_bo_export_dmabuf: trying KGSL ioctl for BO %u (gem_handle %u)", 
++             bo->gem_handle, bo->gem_handle);
 +   int ret = safe_ioctl(dev->physical_device->local_fd,
 +                        IOCTL_KGSL_GPUMEM_GET_DMABUF_FD, &req);
 +   if (ret) {
++      mesa_loge("kgsl_bo_export_dmabuf: KGSL ioctl failed (errno=%d), trying DRM PRIME", errno);
++      /* 回退: 使用 DRM PRIME 导出，需要 DRM 设备节点 */
++      int drm_fd = dev->fd;  /* dev->fd 在 kgsl_device_init 中被设置为 local_fd，仍然是 kgsl 设备，不可用。需要单独打开 drm 节点 */
++      /* 实际应该使用 dev->physical_device->master_fd (如果存在) 或重新打开 /dev/dri/renderD128 */
++      int drm_render_fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
++      if (drm_render_fd >= 0) {
++         uint32_t handle = bo->gem_handle;
++         int prime_fd = drmPrimeHandleToFD(drm_render_fd, handle, DRM_CLOEXEC, &prime_fd);
++         if (prime_fd == 0) {
++            mesa_logi("kgsl_bo_export_dmabuf: DRM PRIME succeeded, fd=%d", prime_fd);
++            close(drm_render_fd);
++            bo->shared_fd = prime_fd;
++            return os_dupfd_cloexec(prime_fd);
++         } else {
++            mesa_loge("kgsl_bo_export_dmabuf: DRM PRIME failed: %s", strerror(errno));
++         }
++         close(drm_render_fd);
++      } else {
++         mesa_loge("kgsl_bo_export_dmabuf: cannot open /dev/dri/renderD128");
++      }
 +      mesa_loge("kgsl_bo_export_dmabuf: ioctl failed for BO %u (handle %u): %s",
 +                bo->gem_handle, bo->gem_handle, strerror(errno));
 +      return -1;
 +   }
 +
++   mesa_logi("kgsl_bo_export_dmabuf: KGSL ioctl succeeded, fd=%d", req.fd);
 +   bo->shared_fd = req.fd;
 +   return os_dupfd_cloexec(bo->shared_fd);
 +}

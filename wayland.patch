@@ -937,7 +937,7 @@ index 00000000000..e4b80b1d8c5
 +   }
 +}
 +
-+VkResult
++static VkResult
 +kgsl_queue_wait_fence(struct tu_queue *queue, uint32_t fence,
 +                      uint64_t timeout_ns)
 +{

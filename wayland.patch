@@ -139,7 +139,7 @@ new file mode 100644
 index 00000000000..b9e3a7f5c8d
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1982 @@
+@@ -0,0 +1,1998 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -176,6 +176,22 @@ index 00000000000..b9e3a7f5c8d
 +#include "tu_queue.h"
 +#include "tu_rmv.h"
 +
++#include "tu_queue.h"
++#include "tu_rmv.h"
++
++/* 缺失的宏定义 */
++#ifndef KGSL_ION_SYSTEM_HEAP_MASK
++#define KGSL_ION_SYSTEM_HEAP_MASK (1u << 25)
++#endif
++
++#ifndef KGSL_IOCTL_TYPE
++#define KGSL_IOCTL_TYPE 0x09
++#endif
++
++#ifndef IOCTL_KGSL_GPUMEM_GET_DMABUF_FD
++#define IOCTL_KGSL_GPUMEM_GET_DMABUF_FD \
++   _IOWR(KGSL_IOCTL_TYPE, 0x90, struct kgsl_gpumem_get_dmabuf_fd)
++#endif
 +
 +struct kgsl_gpumem_get_dmabuf_fd {
 +   __u32 id;
@@ -2141,3 +2157,16 @@ index 12b694b4aae..b2b37643450 100644
     return wsi_common_drm_devices_equal(fd, pdevice->local_fd);
  #else
     return true;
+diff --git a/src/freedreno/vulkan/tu_knl.h b/src/freedreno/vulkan/tu_knl.h
+index 313fc915b9b..0426eba53d3 100644
+--- a/src/freedreno/vulkan/tu_knl.h
++++ b/src/freedreno/vulkan/tu_knl.h
+@@ -50,7 +50,7 @@ struct tu_bo {
+    uint32_t submit_bo_list_idx;
+    uint32_t dump_bo_list_idx;
+ 
+-#ifdef TU_HAS_KGSL
++#if defined(TU_HAS_KGSL) || defined(TU_HAS_KGSL_DRM)
+    /* We have to store fd returned by ion_fd_data
+     * in order to be able to mmap this buffer and to
+     * export file descriptor.

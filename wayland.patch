@@ -139,7 +139,7 @@ new file mode 100644
 index 00000000000..b9e3a7f5c8d
 --- /dev/null
 +++ b/src/freedreno/vulkan/tu_knl_kgsl_drm.cc
-@@ -0,0 +1,1998 @@
+@@ -0,0 +1,2001 @@
 +/*
 + * Copyright © 2020 Google, Inc.
 + * SPDX-License-Identifier: MIT
@@ -550,22 +550,25 @@ index 00000000000..b9e3a7f5c8d
 +static int
 +kgsl_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo)
 +{
-+   if (bo->shared_fd != -1)
++   if (bo->shared_fd != -1) {
++      mesa_logi("kgsl_bo_export_dmabuf: using cached shared_fd=%d", bo->shared_fd);
 +      return os_dupfd_cloexec(bo->shared_fd);
++   }
 +
 +   struct kgsl_gpumem_get_dmabuf_fd req = {
 +      .id = bo->gem_handle,
++      .fd = -1,
 +   };
 +   int ret = safe_ioctl(dev->physical_device->local_fd,
 +                        IOCTL_KGSL_GPUMEM_GET_DMABUF_FD, &req);
 +   if (ret) {
-+      mesa_loge("kgsl_bo_export_dmabuf: failed to get dmabuf fd for BO %u: %s",
-+                bo->gem_handle, strerror(errno));
++      mesa_loge("kgsl_bo_export_dmabuf: ioctl failed for BO %u (handle %u): %s",
++                bo->gem_handle, bo->gem_handle, strerror(errno));
 +      return -1;
 +   }
 +
 +   bo->shared_fd = req.fd;
-+   return os_dupfd_cloexec(req.fd);
++   return os_dupfd_cloexec(bo->shared_fd);
 +}
 +
 +static VkResult

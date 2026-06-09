@@ -30,7 +30,7 @@ diff --git a/meson.build b/meson.build
 index fc83a9869b0..bd903b3633b 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -309,7 +309,7 @@ with_gallium_or_lvp = with_gallium or with_swrast_vk
+@@ -320,7 +320,7 @@ with_gallium_or_lvp = with_gallium or with_swrast_vk
  
  freedreno_kmds = get_option('freedreno-kmds')
  if freedreno_kmds.length() != 0 and freedreno_kmds != [ 'msm' ] and with_freedreno_vk
@@ -52,7 +52,7 @@ index cf28ff85380..c8acd9c86e2 100644
    choices : [
      'all', 'auto',
      'asahi', 'crocus', 'd3d12', 'ethosu', 'etnaviv', 'freedreno', 'i915', 'iris',
-@@ -205,7 +205,7 @@ option(
+@@ -206,7 +206,7 @@ option(
  option(
    'vulkan-drivers',
    type : 'array',
@@ -61,7 +61,7 @@ index cf28ff85380..c8acd9c86e2 100644
    choices : ['auto', 'amd', 'broadcom', 'freedreno', 'intel', 'intel_hasvk',
               'panfrost', 'swrast', 'virtio', 'imagination',
               'microsoft-experimental', 'nouveau', 'asahi', 'gfxstream',
-@@ -221,8 +221,8 @@ option(
+@@ -222,8 +222,8 @@ option(
  option(
    'freedreno-kmds',
    type : 'array',
@@ -76,7 +76,7 @@ diff --git a/src/freedreno/vulkan/meson.build b/src/freedreno/vulkan/meson.build
 index b68006ae571..82054d3f126 100644
 --- a/src/freedreno/vulkan/meson.build
 +++ b/src/freedreno/vulkan/meson.build
-@@ -124,6 +124,12 @@ if freedreno_kmds.contains('msm')
+@@ -127,6 +127,12 @@ if freedreno_kmds.contains('msm')
    tu_deps += dep_libdrm
  endif
  
@@ -106,7 +106,7 @@ diff --git a/src/freedreno/vulkan/tu_knl.cc b/src/freedreno/vulkan/tu_knl.cc
 index bd64af99a88..65b0df6796f 100644
 --- a/src/freedreno/vulkan/tu_knl.cc
 +++ b/src/freedreno/vulkan/tu_knl.cc
-@@ -396,6 +396,10 @@ tu_physical_device_try_create(struct vk_instance *vk_instance,
+@@ -422,6 +422,10 @@ tu_physical_device_try_create(struct vk_instance *vk_instance,
  #ifdef TU_HAS_VIRTIO
        result = tu_knl_drm_virtio_load(instance, fd, version, &device);
  #endif
@@ -2129,3 +2129,55 @@ index 12b694b4aae..b2b37643450 100644
     return true;
 -- 
 2.47.3
+diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
+--- a/src/freedreno/vulkan/tu_device.cc
++++ b/src/freedreno/vulkan/tu_device.cc
+@@ -3717,6 +3717,27 @@ tu_AllocateMemory(VkDevice _device,
+          alloc_flags |= TU_BO_ALLOC_IMPLICIT_SYNC;
+ 
+       char name[64] = "vkAllocateMemory()";
++      /* Detect swapchain image memory: dedicated allocation to an image with
++       * color attachment or transfer source usage (typical for swapchain).
++       * Force shareable so that the BO can be exported as dma-buf for the WSI.
++       */
++      const VkMemoryDedicatedAllocateInfo *dedicate_info =
++         vk_find_struct_const(pAllocateInfo->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
++      if (dedicate_info && dedicate_info->image) {
++         TU_FROM_HANDLE(tu_image, image, dedicate_info->image);
++         if (image->vk.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
++                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
++                                VK_IMAGE_USAGE_SAMPLED_BIT)) {
++            alloc_flags |= TU_BO_ALLOC_SHAREABLE;
++            if (TU_DEBUG(STARTUP)) {
++               mesa_logi("Swapchain image memory: forcing TU_BO_ALLOC_SHAREABLE");
++            }
++         }
++      }
++      /* Also force shareable if memory type is device-local (common for WSI) */
++      if (mem->vk.memory_type_index == 0)  /* device-local, host-visible, coherent */
++         alloc_flags |= TU_BO_ALLOC_SHAREABLE;
++
+       if (device->bo_sizes)
+          snprintf(name, ARRAY_SIZE(name), "vkAllocateMemory(%ldkb)",
+                   (long)DIV_ROUND_UP(pAllocateInfo->allocationSize, 1024));
+diff --git a/src/freedreno/vulkan/tu_wsi.cc b/src/freedreno/vulkan/tu_wsi.cc
+--- a/src/freedreno/vulkan/tu_wsi.cc
++++ b/src/freedreno/vulkan/tu_wsi.cc
+@@ -53,6 +53,17 @@ tu_wsi_init(struct tu_physical_device *physical_device)
+    physical_device->wsi_device.can_present_on_device =
+       tu_wsi_can_present_on_device;
+ 
++   /* For KGSL backend, disable DRM modifiers and prime blit paths which
++    * are not supported. This forces the WSI to use simpler linear images
++    * and avoids incompatible dma-buf import/export sequences.
++    */
++   if (strcmp(physical_device->instance->knl->name, "kgsl") == 0) {
++      physical_device->wsi_device.supports_modifiers = false;
++      physical_device->wsi_device.use_prime_blit = false;
++      if (TU_DEBUG(STARTUP))
++         mesa_logi("KGSL: Disabled DRM modifiers and prime blit in WSI");
++   }
++
+    physical_device->vk.wsi_device = &physical_device->wsi_device;
+ 
+    return VK_SUCCESS;

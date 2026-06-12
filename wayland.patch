@@ -2,7 +2,7 @@ diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.
 index 1234567..abcdefg 100644
 --- a/src/freedreno/vulkan/tu_device.cc
 +++ b/src/freedreno/vulkan/tu_device.cc
-@@ -124,6 +124,8 @@ static void tu_physical_device_finish(struct tu_physical_device *device);
+@@ -1834,6 +1834,8 @@ static void tu_physical_device_finish(struct tu_physical_device *device);
  static void tu_destroy_physical_device(struct vk_physical_device *device);
  static void tu_init_dri_options(struct tu_instance *instance);
  

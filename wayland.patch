@@ -1,17 +1,8 @@
 diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
-index 1234567..abcdefg 100644
+index e1bbd3d..af42b9c 100644
 --- a/src/freedreno/vulkan/tu_device.cc
 +++ b/src/freedreno/vulkan/tu_device.cc
-@@ -1834,6 +1834,8 @@ static void tu_physical_device_finish(struct tu_physical_device *device);
- static void tu_destroy_physical_device(struct vk_physical_device *device);
- static void tu_init_dri_options(struct tu_instance *instance);
- 
-+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL tu_GetDeviceProcAddr(VkDevice, const char*);
-+
- static const driOptionDescription tu_dri_options[] = {
-    DRI_CONF_SECTION_PERFORMANCE
-       DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
-@@ -3455,6 +3457,20 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
+@@ -3451,6 +3451,20 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
                                      pName);
  }
  

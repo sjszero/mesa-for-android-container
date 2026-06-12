@@ -2,30 +2,28 @@ diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.
 index 1234567..abcdefg 100644
 --- a/src/freedreno/vulkan/tu_device.cc
 +++ b/src/freedreno/vulkan/tu_device.cc
-@@ -3455,8 +3455,32 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
-                                     &tu_instance_entrypoints,
+@@ -124,6 +124,8 @@ static void tu_physical_device_finish(struct tu_physical_device *device);
+ static void tu_destroy_physical_device(struct vk_physical_device *device);
+ static void tu_init_dri_options(struct tu_instance *instance);
+ 
++VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL tu_GetDeviceProcAddr(VkDevice, const char*);
++
+ static const driOptionDescription tu_dri_options[] = {
+    DRI_CONF_SECTION_PERFORMANCE
+       DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
+@@ -3455,6 +3457,20 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
                                      pName);
  }
  
-+/* List of all device entrypoint tables used by this driver */
-+static const struct vk_device_entrypoint_table *const tu_device_entrypoint_tables[] = {
-+   &tu_device_entrypoints,
-+   &tu_device_entrypoints_a6xx,
-+   &tu_device_entrypoints_a7xx,
-+   &tu_device_entrypoints_a8xx,
-+   &wsi_device_entrypoints,
-+   NULL
-+};
-+
 +VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 +tu_GetDeviceProcAddr(VkDevice _device, const char *pName)
 +{
 +   VK_FROM_HANDLE(tu_device, device, _device);
-+   return vk_device_get_proc_addr(&device->vk, tu_device_entrypoint_tables, pName);
++   return vk_device_get_proc_addr(&device->vk, pName);
 +}
 +
 +/* Required ICD entrypoint for the loader */
-+PUBLIC VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++extern "C" PUBLIC VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 +vk_icdGetDeviceProcAddr(VkDevice device, const char *pName)
 +{
 +   return tu_GetDeviceProcAddr(device, pName);
@@ -34,4 +32,3 @@ index 1234567..abcdefg 100644
  /* The loader wants us to expose a second GetInstanceProcAddr function
   * to work around certain LD_PRELOAD issues seen in apps.
   */
- PUBLIC

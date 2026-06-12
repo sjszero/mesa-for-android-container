@@ -2,7 +2,7 @@ diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.
 index e1bbd3d..af42b9c 100644
 --- a/src/freedreno/vulkan/tu_device.cc
 +++ b/src/freedreno/vulkan/tu_device.cc
-@@ -3451,6 +3451,20 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
+@@ -3451,6 +3451,23 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
                                      pName);
  }
  
@@ -14,7 +14,10 @@ index e1bbd3d..af42b9c 100644
 +}
 +
 +/* Required ICD entrypoint for the loader */
-+extern "C" PUBLIC VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++PUBLIC VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++vk_icdGetDeviceProcAddr(VkDevice device, const char *pName);
++
++PUBLIC VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 +vk_icdGetDeviceProcAddr(VkDevice device, const char *pName)
 +{
 +   return tu_GetDeviceProcAddr(device, pName);

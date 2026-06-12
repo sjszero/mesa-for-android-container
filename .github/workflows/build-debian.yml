@@ -86,7 +86,7 @@ jobs:
             -Dmicrosoft-clc=disabled \
             -Dvalgrind=disabled \
             -Dgles1=disabled \
-            -Dfreedreno-kmds=kgsl-drm \
+            -Dfreedreno-kmds=kgsl \
             -Dbuildtype=release
           ninja -C build/
           echo "Mesa build completed successfully!"

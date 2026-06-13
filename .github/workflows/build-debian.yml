@@ -6,7 +6,7 @@ on:
       tag:
         description: 'Branch or tag'
         required: true
-        default: 'main'
+        default: 'dev/adreno-main'
       draft_release:
         description: 'Draft a new release'
         required: true
@@ -50,11 +50,11 @@ jobs:
       - name: Clone repository
         run: |
           cd ~
-          git clone -b ${{ github.event.inputs.tag }} --depth 1 https://gitlab.freedesktop.org/mesa/mesa.git
+          git clone -b ${{ github.event.inputs.tag }} --depth 1 https://github.com/lfdevs/mesa-for-android-container.git
       - name: Set release name suffix
         shell: bash
         run: |
-          cd ~/mesa
+          cd ~/mesa-for-android-container
           version=$(grep -v '^[[:space:]]*$' VERSION | head -n1)
           build_date=$(TZ=Asia/Shanghai date +%Y%m%d)
           echo "MESA_RELEASE_NAME_SUFFIX=${version}-${build_date}_debian_trixie_arm64" >> "$GITHUB_ENV"
@@ -68,7 +68,7 @@ jobs:
         run: |
           export CCACHE_DIR=/root/.ccache
           echo "Building Mesa..."
-          cd ~/mesa
+          cd ~/mesa-for-android-container
           meson setup build/ \
             --prefix=/usr \
             -Dplatforms=x11,wayland \
@@ -102,7 +102,7 @@ jobs:
         shell: bash
         run: |
           echo "Packaging Mesa..."
-          cd ~/mesa
+          cd ~/mesa-for-android-container
           mkdir /tmp/mesa-install-tmp
           DESTDIR=/tmp/mesa-install-tmp meson install -C build/
           tar -zcvf mesa_${MESA_RELEASE_NAME_SUFFIX}.tar.gz -C /tmp/mesa-install-tmp .
@@ -117,6 +117,6 @@ jobs:
         with:
           name: mesa_${{ env.MESA_RELEASE_NAME_SUFFIX }}
           path: |
-            ~/mesa/*.tar.gz
-            ~/mesa/sha256sums.txt
+            ~/mesa-for-android-container/*.tar.gz
+            ~/mesa-for-android-container/sha256sums.txt
           retention-days: 90

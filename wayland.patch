@@ -2,20 +2,39 @@ diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.
 index e1bbd3d..af42b9c 100644
 --- a/src/freedreno/vulkan/tu_device.cc
 +++ b/src/freedreno/vulkan/tu_device.cc
-@@ -386,8 +386,10 @@ static void get_device_extensions(const struct tu_physical_device *device,
+@@ -386,8 +386,8 @@ static void get_device_extensions(const struct tu_physical_device *device,
  
        /* For Graphics Flight Recorder (GFR) */
        .AMD_buffer_marker = true,
 -      .ANDROID_external_memory_android_hardware_buffer = has_gralloc,
 -      .ANDROID_native_buffer = has_gralloc,
-+      /* Always enable AHardwareBuffer and native buffer support on KGSL,
-+         even without gralloc, to allow dma-buf based external memory. */
 +      .ANDROID_external_memory_android_hardware_buffer = true,
 +      .ANDROID_native_buffer = true,
        .ARM_rasterization_order_attachment_access = true,
        .GOOGLE_decorate_string = true,
  #ifdef TU_USE_WSI_PLATFORM
-@@ -3470,6 +3472,23 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
+@@ -3156,7 +3156,19 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
+    device->use_z24uint_s8uint =
+       physical_device->info->props.has_z24uint_s8uint &&
+       (!border_color_without_format ||
+        !physical_device->instance->drirc.misc.enable_d24s8_border_color_workaround);
+-   device->use_lrz = !TU_DEBUG_START(NOLRZ);
++   /* Multi-Adreno compatibility: disable certain features on non-840 7xx chips
++    * to avoid AHB bus errors seen on Adreno 750. */
++   bool is_kgsl = (strcmp(physical_device->instance->knl->name, "kgsl") == 0);
++   uint32_t gpu_id = physical_device->dev_id.gpu_id;
++   bool is_problematic_7xx = is_kgsl && (gpu_id >= 700 && gpu_id < 800 && gpu_id != 840);
++   if (is_problematic_7xx) {
++      mesa_logi("TU: applying workarounds for Adreno %u (non-840 7xx)", gpu_id);
++      device->use_lrz = false;                 /* disable LRZ */
++      device->use_z24uint_s8uint = false;      /* fallback to other depth formats */
++   } else {
++      device->use_lrz = !TU_DEBUG_START(NOLRZ);
++   }
++
+ 
+    tu_gpu_tracepoint_config_variable();
+@@ -3463,6 +3480,23 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
                                      pName);
  }
  
@@ -39,54 +58,3 @@ index e1bbd3d..af42b9c 100644
  /* The loader wants us to expose a second GetInstanceProcAddr function
   * to work around certain LD_PRELOAD issues seen in apps.
   */
-@@ -3736,7 +3755,10 @@ tu_AllocateMemory(VkDevice _device,
-          alloc_flags |= TU_BO_ALLOC_REPLAYABLE;
- 
-       const VkExportMemoryAllocateInfo *export_info =
--         vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
-+          vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
-+      /* On KGSL we can export dma-buf from any BO, so we set shareable
-+         if the app requests export OR we are not allocating an internal
-+         resource (i.e., a normal Vulkan memory allocation). */
-       if (export_info && (export_info->handleTypes &
-                           (VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT |
-                            VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)))
-@@ -3748,7 +3770,7 @@ tu_AllocateMemory(VkDevice _device,
-       const struct wsi_memory_allocate_info *wsi_info =
-          vk_find_struct_const(pAllocateInfo->pNext, WSI_MEMORY_ALLOCATE_INFO_MESA);
-       if (wsi_info && wsi_info->implicit_sync)
--         alloc_flags |= TU_BO_ALLOC_IMPLICIT_SYNC;
-+          alloc_flags |= TU_BO_ALLOC_IMPLICIT_SYNC;
- 
-       char name[64] = "vkAllocateMemory()";
-       if (device->bo_sizes)
-@@ -3783,7 +3805,7 @@ tu_AllocateMemory(VkDevice _device,
- 
- #ifdef VK_USE_PLATFORM_ANDROID_KHR
-    if (mem->vk.ahardware_buffer && mem->image &&
--       vk_image_is_android_hardware_buffer(&mem->image->vk)) {
-+          vk_image_is_android_hardware_buffer(&mem->image->vk)) {
-       VkImageDrmFormatModifierExplicitCreateInfoEXT eci;
-       VkSubresourceLayout a_plane_layouts[TU_MAX_PLANE_COUNT];
-       result = vk_android_get_ahb_layout(mem->vk.ahardware_buffer, &eci,
-@@ -3804,6 +3826,7 @@ tu_AllocateMemory(VkDevice _device,
-       __vk_append_struct(mem->image->vk.android_deferred_create_info,
-                          &external_info);
- 
-+      /* Finalize image initialization with the AHB layout */
-       result = TU_CALLX(device, tu_image_init)(
-          device, mem->image, mem->image->vk.android_deferred_create_info,
-          eci.drmFormatModifier, a_plane_layouts);
-diff --git a/src/freedreno/vulkan/tu_knl_kgsl.cc b/src/freedreno/vulkan/tu_knl_kgsl.cc
-index 7a9b4c2..bc8d3e1 100644
---- a/src/freedreno/vulkan/tu_knl_kgsl.cc
-+++ b/src/freedreno/vulkan/tu_knl_kgsl.cc
-@@ -287,7 +287,7 @@ kgsl_bo_init(struct tu_device *dev,
-              enum tu_bo_alloc_flags flags,
-              struct tu_sparse_vma *lazy_vma,
-              const char *name)
--{
-+   {
-    if (flags & TU_BO_ALLOC_SHAREABLE) {
-       /* The Vulkan spec doesn't forbid allocating exportable memory with a
-        * fixed address, only imported memory, but on kgsl we can't sensibly

@@ -73,19 +73,7 @@ jobs:
             --prefix=/usr \
             -Dplatforms=x11,wayland \
             -Dgallium-drivers=freedreno,zink \
-            -Dgallium-va=disabled \
-            -Dgallium-mediafoundation=disabled \
             -Dvulkan-drivers=freedreno \
-            -Dvulkan-layers= \
-            -Degl=enabled \
-            -Dgles2=enabled \
-            -Dglvnd=enabled \
-            -Dglx=dri \
-            -Dlibunwind=disabled \
-            -Dintel-rt=disabled \
-            -Dmicrosoft-clc=disabled \
-            -Dvalgrind=disabled \
-            -Dgles1=disabled \
             -Dfreedreno-kmds=kgsl \
             -Dbuildtype=release
           ninja -C build/

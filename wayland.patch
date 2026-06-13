@@ -2,17 +2,20 @@ diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.
 index e1bbd3d..af42b9c 100644
 --- a/src/freedreno/vulkan/tu_device.cc
 +++ b/src/freedreno/vulkan/tu_device.cc
-@@ -386,7 +386,8 @@ static void get_device_extensions(const struct tu_physical_device *device,
+@@ -386,8 +386,10 @@ static void get_device_extensions(const struct tu_physical_device *device,
  
        /* For Graphics Flight Recorder (GFR) */
        .AMD_buffer_marker = true,
 -      .ANDROID_external_memory_android_hardware_buffer = has_gralloc,
-+      /* Always enable AHardwareBuffer support on KGSL, even without gralloc */
+-      .ANDROID_native_buffer = has_gralloc,
++      /* Always enable AHardwareBuffer and native buffer support on KGSL,
++         even without gralloc, to allow dma-buf based external memory. */
 +      .ANDROID_external_memory_android_hardware_buffer = true,
-       .ANDROID_native_buffer = has_gralloc,
++      .ANDROID_native_buffer = true,
        .ARM_rasterization_order_attachment_access = true,
        .GOOGLE_decorate_string = true,
-@@ -3468,6 +3469,23 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
+ #ifdef TU_USE_WSI_PLATFORM
+@@ -3470,6 +3472,23 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
                                      pName);
  }
  
@@ -36,104 +39,108 @@ index e1bbd3d..af42b9c 100644
  /* The loader wants us to expose a second GetInstanceProcAddr function
   * to work around certain LD_PRELOAD issues seen in apps.
   */
-@@ -3735,7 +3753,9 @@ tu_AllocateMemory(VkDevice _device,
+@@ -3736,7 +3755,10 @@ tu_AllocateMemory(VkDevice _device,
           alloc_flags |= TU_BO_ALLOC_REPLAYABLE;
  
        const VkExportMemoryAllocateInfo *export_info =
 -         vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
 +          vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
-+      /* On KGSL, we can always export dma-buf, even if not explicitly requested.
-+         But we only set shareable if export_info exists or we know we need it. */
++      /* On KGSL we can export dma-buf from any BO, so we set shareable
++         if the app requests export OR we are not allocating an internal
++         resource (i.e., a normal Vulkan memory allocation). */
        if (export_info && (export_info->handleTypes &
                            (VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT |
                             VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)))
+@@ -3748,7 +3770,7 @@ tu_AllocateMemory(VkDevice _device,
+       const struct wsi_memory_allocate_info *wsi_info =
+          vk_find_struct_const(pAllocateInfo->pNext, WSI_MEMORY_ALLOCATE_INFO_MESA);
+       if (wsi_info && wsi_info->implicit_sync)
+-         alloc_flags |= TU_BO_ALLOC_IMPLICIT_SYNC;
++          alloc_flags |= TU_BO_ALLOC_IMPLICIT_SYNC;
+ 
+       char name[64] = "vkAllocateMemory()";
+       if (device->bo_sizes)
+@@ -3783,7 +3805,7 @@ tu_AllocateMemory(VkDevice _device,
+ 
+ #ifdef VK_USE_PLATFORM_ANDROID_KHR
+    if (mem->vk.ahardware_buffer && mem->image &&
+-       vk_image_is_android_hardware_buffer(&mem->image->vk)) {
++          vk_image_is_android_hardware_buffer(&mem->image->vk)) {
+       VkImageDrmFormatModifierExplicitCreateInfoEXT eci;
+       VkSubresourceLayout a_plane_layouts[TU_MAX_PLANE_COUNT];
+       result = vk_android_get_ahb_layout(mem->vk.ahardware_buffer, &eci,
+@@ -3804,6 +3826,7 @@ tu_AllocateMemory(VkDevice _device,
+       __vk_append_struct(mem->image->vk.android_deferred_create_info,
+                          &external_info);
+ 
++      /* Finalize image initialization with the AHB layout */
+       result = TU_CALLX(device, tu_image_init)(
+          device, mem->image, mem->image->vk.android_deferred_create_info,
+          eci.drmFormatModifier, a_plane_layouts);
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl.cc b/src/freedreno/vulkan/tu_knl_kgsl.cc
-index abc123..def456 100644
+index 7a9b4c2..bc8d3e1 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl.cc
 @@ -287,7 +287,7 @@ kgsl_bo_init(struct tu_device *dev,
               enum tu_bo_alloc_flags flags,
               struct tu_sparse_vma *lazy_vma,
               const char *name)
- {
--   if (flags & TU_BO_ALLOC_SHAREABLE) {
-+   if ((flags & TU_BO_ALLOC_SHAREABLE) || !(flags & TU_BO_ALLOC_INTERNAL_RESOURCE)) {
+-{
++   {
+    if (flags & TU_BO_ALLOC_SHAREABLE) {
        /* The Vulkan spec doesn't forbid allocating exportable memory with a
         * fixed address, only imported memory, but on kgsl we can't sensibly
-        * implement it so just always reject it.
-@@ -296,7 +296,7 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
- }
- 
- static int
- kgsl_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo)
- {
-    assert(bo->shared_fd != -1);
-@@ -304,7 +304,7 @@ kgsl_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo)
- }
- 
- static VkResult
- kgsl_bo_map(struct tu_device *dev, struct tu_bo *bo, void *placed_addr)
- {
-@@ -477,6 +477,8 @@ kgsl_syncobj_export(struct kgsl_syncobj *s, int *pFd)
-    if (!pFd)
-       return VK_SUCCESS;
- 
-+   /* If the syncobj is unsignaled, we can still export a fence that will signal later */
-    switch (s->state) {
-    case KGSL_SYNCOBJ_STATE_SIGNALED:
-    case KGSL_SYNCOBJ_STATE_UNSIGNALED:
-@@ -506,6 +508,7 @@ kgsl_syncobj_import(struct kgsl_syncobj *s, int fd)
-    kgsl_syncobj_reset(s);
-    if (fd >= 0) {
-       s->state = KGSL_SYNCOBJ_STATE_FD;
-       s->fd = fd;
 diff --git a/src/freedreno/vulkan/tu_wsi.cc b/src/freedreno/vulkan/tu_wsi.cc
-index 123abc..456def 100644
+index 3d4a5e6..f7b8c9d 100644
 --- a/src/freedreno/vulkan/tu_wsi.cc
 +++ b/src/freedreno/vulkan/tu_wsi.cc
-@@ -52,17 +52,30 @@ tu_wsi_init(struct tu_physical_device *physical_device)
- {
-    VkResult result;
- 
-    const struct wsi_device_options options = { .sw_device = false };
-+   /* KGSL does not have a DRM master node; we must skip DRM-based WSI.
-+      However, external memory and sync extensions remain functional. */
+@@ -50,16 +50,28 @@ tu_wsi_init(struct tu_physical_device *physical_device)
+ VkResult
+ tu_wsi_init(struct tu_physical_device *physical_device)
++   /* KGSL does not have a DRM master node; we cannot use the standard DRM WSI.
++      However, we still need to initialize a minimal wsi_device to satisfy
++      external memory and sync extensions. Pass -1 for the DRM fd. */
 +   if (tu_wsi_is_kgsl(physical_device)) {
-+      /* Initialize a minimal WSI device that doesn't depend on DRM */
 +      result = wsi_device_init(&physical_device->wsi_device,
 +                               tu_physical_device_to_handle(physical_device),
 +                               tu_wsi_proc_addr,
 +                               &physical_device->instance->vk.alloc,
-+                               -1, /* no DRM fd */
++                               -1,  /* no DRM fd */
 +                               &physical_device->instance->drirc.options,
-+                               &options);
++                               &(struct wsi_device_options){ .sw_device = false });
 +   } else {
-    result = wsi_device_init(&physical_device->wsi_device,
-                             tu_physical_device_to_handle(physical_device),
-                             tu_wsi_proc_addr,
-                             &physical_device->instance->vk.alloc,
-                             physical_device->master_fd,
-                             &physical_device->instance->drirc.options,
-                             &options);
++      result = wsi_device_init(&physical_device->wsi_device,
++                               tu_physical_device_to_handle(physical_device),
++                               tu_wsi_proc_addr,
++                               &physical_device->instance->vk.alloc,
++                               physical_device->master_fd,
++                               &physical_device->instance->drirc.options,
++                               &(struct wsi_device_options){ .sw_device = false });
 +   }
+ {
+    VkResult result;
+ 
+-   const struct wsi_device_options options = { .sw_device = false };
+-   result = wsi_device_init(&physical_device->wsi_device,
+-                            tu_physical_device_to_handle(physical_device),
+-                            tu_wsi_proc_addr,
+-                            &physical_device->instance->vk.alloc,
+-                            physical_device->master_fd,
+-                            &physical_device->instance->drirc.options,
+-                            &options);
     if (result != VK_SUCCESS)
        return result;
  
-    physical_device->wsi_device.supports_modifiers = true;
-    physical_device->wsi_device.can_present_on_device =
-       tu_wsi_can_present_on_device;
 diff --git a/src/freedreno/vulkan/tu_wsi.h b/src/freedreno/vulkan/tu_wsi.h
-index 456abc..789def 100644
+index d8e7f9a..a1b2c3d 100644
 --- a/src/freedreno/vulkan/tu_wsi.h
 +++ b/src/freedreno/vulkan/tu_wsi.h
-@@ -10,9 +10,9 @@
+@@ -12,7 +12,7 @@
  #ifndef TU_WSI_H
  #define TU_WSI_H
  
- #include "tu_common.h"
- 
 -#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || \
-+#if 1  /* Always enable WSI platform on KGSL for external memory */
++#if 1 || defined(VK_USE_PLATFORM_WAYLAND_KHR) || \
      defined(VK_USE_PLATFORM_XCB_KHR) || \
      defined(VK_USE_PLATFORM_XLIB_KHR) || \
      defined(VK_USE_PLATFORM_DISPLAY_KHR)

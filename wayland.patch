@@ -1,28 +1,101 @@
 diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
-index e1bbd3d..af42b9c 100644
+index e1bbd3d..a1b2c3d 100644
 --- a/src/freedreno/vulkan/tu_device.cc
 +++ b/src/freedreno/vulkan/tu_device.cc
-@@ -3468,6 +3468,23 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
-                                     pName);
+@@ -2582,9 +2582,22 @@ tu_GetMemoryFdPropertiesKHR(VkDevice _device,
+ {
+    VK_FROM_HANDLE(tu_device, device, _device);
+    assert(handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+-   pMemoryFdProperties->memoryTypeBits =
+-      (1 << device->physical_device->memory.non_lazy_type_count) - 1;
++
++   /* Weston's vulkan-renderer may query memoryTypeBits for a dma-buf that
++    * was originally allocated with a specific memory type. Return all possible
++    * memory types (including lazy) to maximize chance of compatibility.
++    */
++   pMemoryFdProperties->memoryTypeBits = (1 << device->physical_device->memory.type_count) - 1;
++
++   if (TU_DEBUG(STARTUP)) {
++      mesa_logi("GetMemoryFdProperties: handleType=0x%x, fd=%d, memoryTypeBits=0x%x",
++                handleType, fd, pMemoryFdProperties->memoryTypeBits);
++   }
++
+    return VK_SUCCESS;
++   /* If we ever need to be more restrictive, we could query the dma-buf's
++    * modifier and format and match to a specific memory type.
++    */
  }
  
-+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
-+tu_GetDeviceProcAddr(VkDevice _device, const char *pName)
-+{
-+   VK_FROM_HANDLE(tu_device, device, _device);
-+   return vk_device_get_proc_addr(&device->vk, pName);
-+}
+ VKAPI_ATTR void VKAPI_CALL
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl.cc b/src/freedreno/vulkan/tu_knl_kgsl.cc
+index 7c8d9e0..b2c3d4e 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl.cc
+@@ -266,20 +266,36 @@ static VkResult
+ kgsl_bo_init_dmabuf(struct tu_device *dev,
+                     struct tu_bo **out_bo,
+                     uint64_t size,
+                     enum tu_bo_alloc_flags flags,
+                     int fd)
+ {
++   /* If size is 0 or unaligned, try to get actual size from the fd */
++   if (size == 0 || (size & (os_page_size - 1)) != 0) {
++      off_t file_size = lseek(fd, 0, SEEK_END);
++      if (file_size > 0) {
++         size = align64(file_size, os_page_size);
++         if (TU_DEBUG(STARTUP)) {
++            mesa_logi("dma-buf import: corrected size from %ld to %ld",
++                      (long)size, (long)file_size);
++         }
++      } else {
++         /* Fallback to a reasonable default (e.g. 4K) */
++         size = MAX2(size, 4096);
++         size = align64(size, os_page_size);
++      }
++   }
 +
-+/* Required ICD entrypoint for the loader */
-+PUBLIC VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
-+vk_icdGetDeviceProcAddr(VkDevice device, const char *pName);
+    struct kgsl_gpuobj_import_dma_buf import_dmabuf = {
+       .fd = fd,
+    };
+    struct kgsl_gpuobj_import req = {
+       .priv = (uintptr_t)&import_dmabuf,
+       .priv_len = sizeof(import_dmabuf),
+       .flags = 0,
+       .type = KGSL_USER_MEM_TYPE_DMABUF,
+    };
+    int ret;
+ 
+    ret = safe_ioctl(dev->physical_device->local_fd,
+                     IOCTL_KGSL_GPUOBJ_IMPORT, &req);
+    if (ret)
+@@ -282,24 +303,29 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
+ 
+    *bo = (struct tu_bo) {
+       .gem_handle = req.id,
+-      .size = info_req.size,
++      .size = MAX2(info_req.size, size),   /* use kernel reported size if larger */
+       .iova = info_req.gpuaddr,
+       .name = tu_debug_bos_add(dev, info_req.size, "dmabuf"),
+       .refcnt = 1,
+       .shared_fd = os_dupfd_cloexec(fd),
+    };
+ 
+    struct stat st;
+    if (fstat(fd, &st) == 0)
+       /* Use the inode number as the unique ID, but set the MSB to avoid
+        * collisions with 32-bit KGSL handles (which are used for native BOs).
+        */
+       bo->unique_id = st.st_ino | (1ULL << 63);
+ 
++   if (TU_DEBUG(STARTUP)) {
++      mesa_logi("Imported dma-buf: gem_handle=%u, size=%ld, iova=0x%lx",
++                bo->gem_handle, (long)bo->size, (long)bo->iova);
++   }
 +
-+PUBLIC VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
-+vk_icdGetDeviceProcAddr(VkDevice device, const char *pName)
-+{
-+   return tu_GetDeviceProcAddr(device, pName);
-+}
-+
- /* The loader wants us to expose a second GetInstanceProcAddr function
-  * to work around certain LD_PRELOAD issues seen in apps.
-  */
+    tu_dump_bo_init(dev, bo);
+ 
+    *out_bo = bo;
+ 
+    return VK_SUCCESS;
+ }
+ 

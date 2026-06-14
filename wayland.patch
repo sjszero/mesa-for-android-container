@@ -1,18 +1,80 @@
 diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
-index e1bbd3d..a1b2c3d 100644
+index e1bbd3d..f7a8b9c 100644
 --- a/src/freedreno/vulkan/tu_device.cc
 +++ b/src/freedreno/vulkan/tu_device.cc
-@@ -2582,9 +2582,22 @@ tu_GetMemoryFdPropertiesKHR(VkDevice _device,
+@@ -2602,6 +2615,30 @@ tu_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice pdev,
+       .propertyFlags = physical_device->memory.types[i],
+       .heapIndex     = 0,
+    };
++
++   /* Weston may refuse to allocate if heap size seems too small. Override with 2GB. */
++   props->memoryHeaps[0].size = 2ull << 30;
++
++   vk_foreach_struct(ext, props2->pNext) {
++      switch (ext->sType) {
++      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT: {
++         VkPhysicalDeviceMemoryBudgetPropertiesEXT *budget =
++            (VkPhysicalDeviceMemoryBudgetPropertiesEXT *) ext;
++         budget->heapBudget[0] = 2ull << 30;
++         break;
++      }
++      default:
++         break;
++      }
++   }
++}
++
++/* Required ICD entrypoint for the loader */
++PUBLIC VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++vk_icdGetDeviceProcAddr(VkDevice device, const char *pName)
++{
++   return tu_GetDeviceProcAddr(device, pName);
++}
+ 
+ VKAPI_ATTR void VKAPI_CALL
+ tu_GetPhysicalDeviceMultisamplePropertiesEXT(
+@@ -3468,6 +3505,23 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
+                                     pName);
+ }
+ 
++VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++tu_GetDeviceProcAddr(VkDevice _device, const char *pName)
++{
++   VK_FROM_HANDLE(tu_device, device, _device);
++   return vk_device_get_proc_addr(&device->vk, pName);
++}
++
++/* Required ICD entrypoint for the loader */
++PUBLIC VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++vk_icdGetDeviceProcAddr(VkDevice device, const char *pName);
++
++PUBLIC VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++vk_icdGetDeviceProcAddr(VkDevice device, const char *pName)
++{
++   return tu_GetDeviceProcAddr(device, pName);
++}
++
+ /* The loader wants us to expose a second GetInstanceProcAddr function
+  * to work around certain LD_PRELOAD issues seen in apps.
+  */
+@@ -3648,6 +3702,9 @@ tu_AllocateMemory(VkDevice _device,
+    struct tu_device_memory *mem;
+    VkResult result;
+ 
++   if (TU_DEBUG(STARTUP))
++      mesa_logi("AllocateMemory: size=%lu, memoryTypeIndex=%u",
++                (unsigned long)pAllocateInfo->allocationSize, pAllocateInfo->memoryTypeIndex);
+    assert(pAllocateInfo->sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
+ 
+    struct tu_memory_heap *mem_heap = &device->physical_device->heap;
+@@ -2582,9 +2582,23 @@ tu_GetMemoryFdPropertiesKHR(VkDevice _device,
  {
     VK_FROM_HANDLE(tu_device, device, _device);
     assert(handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
 -   pMemoryFdProperties->memoryTypeBits =
 -      (1 << device->physical_device->memory.non_lazy_type_count) - 1;
 +
-+   /* Weston's vulkan-renderer may query memoryTypeBits for a dma-buf that
-+    * was originally allocated with a specific memory type. Return all possible
-+    * memory types (including lazy) to maximize chance of compatibility.
-+    */
++   /* Return all memory types (including lazy) to maximize compatibility */
 +   pMemoryFdProperties->memoryTypeBits = (1 << device->physical_device->memory.type_count) - 1;
 +
 +   if (TU_DEBUG(STARTUP)) {
@@ -21,17 +83,21 @@ index e1bbd3d..a1b2c3d 100644
 +   }
 +
     return VK_SUCCESS;
-+   /* If we ever need to be more restrictive, we could query the dma-buf's
-+    * modifier and format and match to a specific memory type.
-+    */
++}
++
++VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++tu_GetDeviceProcAddr(VkDevice _device, const char *pName)
++{
++   VK_FROM_HANDLE(tu_device, device, _device);
++   return vk_device_get_proc_addr(&device->vk, pName);
  }
  
  VKAPI_ATTR void VKAPI_CALL
 diff --git a/src/freedreno/vulkan/tu_knl_kgsl.cc b/src/freedreno/vulkan/tu_knl_kgsl.cc
-index 7c8d9e0..b2c3d4e 100644
+index 7c8d9e0..f1e2d3c 100644
 --- a/src/freedreno/vulkan/tu_knl_kgsl.cc
 +++ b/src/freedreno/vulkan/tu_knl_kgsl.cc
-@@ -266,20 +266,36 @@ static VkResult
+@@ -266,20 +266,35 @@ static VkResult
  kgsl_bo_init_dmabuf(struct tu_device *dev,
                      struct tu_bo **out_bo,
                      uint64_t size,
@@ -44,11 +110,10 @@ index 7c8d9e0..b2c3d4e 100644
 +      if (file_size > 0) {
 +         size = align64(file_size, os_page_size);
 +         if (TU_DEBUG(STARTUP)) {
-+            mesa_logi("dma-buf import: corrected size from %ld to %ld",
-+                      (long)size, (long)file_size);
++            mesa_logi("dma-buf import: corrected size from fd to %ld",
++                      (long)file_size);
 +         }
 +      } else {
-+         /* Fallback to a reasonable default (e.g. 4K) */
 +         size = MAX2(size, 4096);
 +         size = align64(size, os_page_size);
 +      }
@@ -68,12 +133,14 @@ index 7c8d9e0..b2c3d4e 100644
     ret = safe_ioctl(dev->physical_device->local_fd,
                      IOCTL_KGSL_GPUOBJ_IMPORT, &req);
     if (ret)
-@@ -282,24 +303,29 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
+@@ -282,22 +312,27 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
+    struct tu_bo* bo = tu_device_lookup_bo(dev, req.id);
+    assert(bo && bo->gem_handle == 0);
  
     *bo = (struct tu_bo) {
        .gem_handle = req.id,
 -      .size = info_req.size,
-+      .size = MAX2(info_req.size, size),   /* use kernel reported size if larger */
++      .size = MAX2(info_req.size, size),
        .iova = info_req.gpuaddr,
        .name = tu_debug_bos_add(dev, info_req.size, "dmabuf"),
        .refcnt = 1,
@@ -95,7 +162,3 @@ index 7c8d9e0..b2c3d4e 100644
     tu_dump_bo_init(dev, bo);
  
     *out_bo = bo;
- 
-    return VK_SUCCESS;
- }
- 

@@ -2,23 +2,7 @@ diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.
 index e1bbd3d..af42b9c 100644
 --- a/src/freedreno/vulkan/tu_device.cc
 +++ b/src/freedreno/vulkan/tu_device.cc
-@@ -1736,7 +1736,15 @@ tu_physical_device_init(struct tu_physical_device *device,
-    device->memory.types[0] =
-       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-+      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-+
-+   /* Workaround for weston vulkan-renderer: add a memory type with only
-+    * DEVICE_LOCAL and HOST_VISIBLE (no HOST_COHERENT).
-+    */
-+   device->memory.types[device->memory.type_count] =
-+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-+   device->memory.type_count++;
- 
-    if (device->has_cached_coherent_memory) {
-       device->memory.types[device->memory.type_count] =
-@@ -1266,9 +1266,19 @@ tu_physical_device_init(struct tu_physical_device *device,
+@@ -1736,9 +1736,19 @@ tu_physical_device_init(struct tu_physical_device *device,
     device->memory.types[0] =
        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
@@ -38,7 +22,7 @@ index e1bbd3d..af42b9c 100644
        device->memory.types[device->memory.type_count] =
           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-@@ -3469,6 +3488,23 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
+@@ -3461,6 +3471,23 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
                                      pName);
  }
  

@@ -2,7 +2,7 @@ diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.
 index e1bbd3d..af42b9c 100644
 --- a/src/freedreno/vulkan/tu_device.cc
 +++ b/src/freedreno/vulkan/tu_device.cc
-@@ -1266,7 +1266,15 @@ tu_physical_device_init(struct tu_physical_device *device,
+@@ -1736,7 +1736,15 @@ tu_physical_device_init(struct tu_physical_device *device,
     device->memory.types[0] =
        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
@@ -38,7 +38,7 @@ index e1bbd3d..af42b9c 100644
        device->memory.types[device->memory.type_count] =
           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-@@ -3468,6 +3468,23 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
+@@ -3469,6 +3488,23 @@ tu_GetInstanceProcAddr(VkInstance _instance, const char *pName)
                                      pName);
  }
  
